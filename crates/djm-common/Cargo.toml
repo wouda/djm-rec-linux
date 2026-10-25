@@ -1,0 +1,15 @@
+[package]
+name = "djm-common"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+byteorder.workspace = true
+tracing.workspace = true
+rand = "0.8"

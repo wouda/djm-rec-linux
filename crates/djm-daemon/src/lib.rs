@@ -1,0 +1,9 @@
+pub mod alsa_capture;
+pub mod mixer_controls;
+pub mod headroom_guard;
+pub mod preroll_buffer;
+pub mod silence_gate;
+pub mod flac_writer;
+pub mod session_log;
+pub mod ipc_server;
+pub mod audio_engine;

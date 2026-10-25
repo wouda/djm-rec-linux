@@ -1,0 +1,18 @@
+[package]
+name = "djm-tui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+djm-common = { workspace = true }
+ratatui = "0.28"
+crossterm = { version = "0.28", features = ["event-stream"] }
+tokio = { workspace = true }
+qrcode = "0.14"
+futures = "0.3"
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }

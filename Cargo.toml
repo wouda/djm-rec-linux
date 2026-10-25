@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "crates/djm-common",
+    "crates/djm-daemon",
+    "crates/djm-tui",
+    "crates/djm-remote",
+    "crates/djm-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+authors = ["djm-rec-linux developers"]
+license = "Proprietary"
+publish = false
+
+[workspace.dependencies]
+djm-common = { path = "crates/djm-common" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+tokio = { version = "1.38", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1.0"
+anyhow = "1.0"
+byteorder = "1.5"

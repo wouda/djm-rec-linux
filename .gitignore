@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+*.flac
+*.flac.part
+*.log
+.DS_Store
