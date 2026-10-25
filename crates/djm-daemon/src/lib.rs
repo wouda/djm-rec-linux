@@ -5,5 +5,6 @@ pub mod preroll_buffer;
 pub mod silence_gate;
 pub mod flac_writer;
 pub mod session_log;
+pub mod ambient_capture;
 pub mod ipc_server;
 pub mod audio_engine;

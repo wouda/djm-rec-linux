@@ -22,6 +22,8 @@ pub struct AppConfig {
     pub gain_and_hardware: GainAndHardwareConfig,
     #[serde(default)]
     pub remote: RemoteConfig,
+    #[serde(default)]
+    pub audio: AudioConfig,
 }
 
 impl Default for AppConfig {
@@ -31,6 +33,7 @@ impl Default for AppConfig {
             splitting: SplittingConfig::default(),
             gain_and_hardware: GainAndHardwareConfig::default(),
             remote: RemoteConfig::default(),
+            audio: AudioConfig::default(),
         }
     }
 }
@@ -214,6 +217,80 @@ impl Default for RemoteConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct AudioConfig {
+    #[serde(default)]
+    pub djm_mic: DjmMicConfig,
+    #[serde(default)]
+    pub ambient_mic: AmbientMicConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DjmMicConfig {
+    #[serde(default = "default_djm_mic_include_in_master")]
+    pub include_in_master: bool,
+    #[serde(default = "default_djm_mic_separate_recording")]
+    pub separate_recording: bool,
+}
+
+fn default_djm_mic_include_in_master() -> bool {
+    false
+}
+fn default_djm_mic_separate_recording() -> bool {
+    true
+}
+
+impl Default for DjmMicConfig {
+    fn default() -> Self {
+        Self {
+            include_in_master: default_djm_mic_include_in_master(),
+            separate_recording: default_djm_mic_separate_recording(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AmbientMicConfig {
+    #[serde(default = "default_ambient_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_ambient_device")]
+    pub device: String,
+    #[serde(default = "default_ambient_hangover")]
+    pub post_set_hangover_mins: u32,
+    #[serde(default = "default_ambient_sample_rate")]
+    pub sample_rate: u32,
+    #[serde(default = "default_ambient_channels")]
+    pub channels: u32,
+}
+
+fn default_ambient_enabled() -> bool {
+    true
+}
+fn default_ambient_device() -> String {
+    "auto".to_string()
+}
+fn default_ambient_hangover() -> u32 {
+    15
+}
+fn default_ambient_sample_rate() -> u32 {
+    48000
+}
+fn default_ambient_channels() -> u32 {
+    2
+}
+
+impl Default for AmbientMicConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_ambient_enabled(),
+            device: default_ambient_device(),
+            post_set_hangover_mins: default_ambient_hangover(),
+            sample_rate: default_ambient_sample_rate(),
+            channels: default_ambient_channels(),
+        }
+    }
+}
+
 impl AppConfig {
     pub fn default_config_path() -> PathBuf {
         if let Some(home) = std::env::var_os("HOME") {
@@ -291,5 +368,42 @@ mod tests {
         // Default fields preserved
         assert_eq!(loaded.splitting.silence_threshold_dbfs, -75.0);
         assert_eq!(loaded.gain_and_hardware.default_capture_level, "-19dB");
+        assert!(!loaded.audio.djm_mic.include_in_master);
+        assert!(loaded.audio.djm_mic.separate_recording);
+        assert!(loaded.audio.ambient_mic.enabled);
+        assert_eq!(loaded.audio.ambient_mic.device, "auto");
+        assert_eq!(loaded.audio.ambient_mic.post_set_hangover_mins, 15);
+    }
+
+    #[test]
+    fn test_audio_config_defaults_and_override() {
+        let default_cfg = AppConfig::default();
+        assert!(!default_cfg.audio.djm_mic.include_in_master);
+        assert!(default_cfg.audio.djm_mic.separate_recording);
+        assert!(default_cfg.audio.ambient_mic.enabled);
+        assert_eq!(default_cfg.audio.ambient_mic.device, "auto");
+        assert_eq!(default_cfg.audio.ambient_mic.post_set_hangover_mins, 15);
+        assert_eq!(default_cfg.audio.ambient_mic.sample_rate, 48000);
+        assert_eq!(default_cfg.audio.ambient_mic.channels, 2);
+
+        let custom_raw = r#"
+        [audio.djm_mic]
+        include_in_master = true
+        separate_recording = false
+
+        [audio.ambient_mic]
+        enabled = true
+        device = "hw:0,0"
+        post_set_hangover_mins = 30
+        sample_rate = 96000
+        channels = 1
+        "#;
+        let loaded = AppConfig::from_toml(custom_raw).expect("deserialization failed");
+        assert!(loaded.audio.djm_mic.include_in_master);
+        assert!(!loaded.audio.djm_mic.separate_recording);
+        assert_eq!(loaded.audio.ambient_mic.device, "hw:0,0");
+        assert_eq!(loaded.audio.ambient_mic.post_set_hangover_mins, 30);
+        assert_eq!(loaded.audio.ambient_mic.sample_rate, 96000);
+        assert_eq!(loaded.audio.ambient_mic.channels, 1);
     }
 }

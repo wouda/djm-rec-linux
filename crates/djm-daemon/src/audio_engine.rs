@@ -1,7 +1,9 @@
 use crate::alsa_capture::SyntheticCapture;
-use crate::flac_writer::{scan_and_repair_orphaned_parts, FlacWriter};
+use crate::ambient_capture::{detect_host_capture_device, AmbientCaptureLoop, HangoverTimer};
+use crate::flac_writer::{scan_and_repair_orphaned_parts, FlacWriter, StreamMetadata};
 use crate::headroom_guard::HeadroomGuard;
 use crate::ipc_server::IpcServer;
+use crate::mixer_controls::{AlsaMixerController, MixerController};
 use crate::preroll_buffer::PrerollBuffer;
 use crate::session_log::SessionLog;
 use crate::silence_gate::{GateAction, SilenceGate};
@@ -78,17 +80,55 @@ impl AudioEngine {
         let mut peak_l_hold = -9600i16;
         let mut peak_r_hold = -9600i16;
 
+        let session_id = format!(
+            "rec_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        );
+
         let active_mixer_profile: Option<MixerProfile> = if mock_mode {
             Some(find_profile_by_usb_id(0x2b73, 0x000a).unwrap())
         } else {
             Self::probe_connected_mixer()
         };
 
-        if active_mixer_profile.is_some() {
+        if let Some(ref prof) = active_mixer_profile {
             silence_gate.set_state(RecordingState::ArmedSilent);
+            let mut controller = AlsaMixerController::new("default");
+            let _ = controller.configure_rec_out(prof, self.config.audio.djm_mic.include_in_master);
         } else {
             silence_gate.set_state(RecordingState::Disconnected);
         }
+
+        // Setup ambient capture if enabled
+        let mut ambient_cons_opt = None;
+        if self.config.audio.ambient_mic.enabled {
+            let ambient_dev_opt = if self.config.audio.ambient_mic.device == "auto" {
+                detect_host_capture_device()
+            } else {
+                Some(self.config.audio.ambient_mic.device.clone())
+            };
+
+            if let Some(dev_name) = ambient_dev_opt {
+                let ambient_rate = self.config.audio.ambient_mic.sample_rate;
+                let (ambient_prod, ambient_cons) = RingBuffer::<(i32, i32)>::new((ambient_rate / 10) as usize);
+                ambient_cons_opt = Some(ambient_cons);
+                let amb_running = self.running.clone();
+                let loop_dev = dev_name.clone();
+                std::thread::spawn(move || {
+                    let capture_loop = AmbientCaptureLoop::new(&loop_dev, ambient_rate, amb_running);
+                    if let Err(e) = capture_loop.run(ambient_prod) {
+                        warn!("Ambient capture loop exited: {}", e);
+                    }
+                });
+                info!("Ambient host capture initialized on device '{}'", dev_name);
+            }
+        }
+
+        let mut ambient_writer: Option<FlacWriter> = None;
+        let mut hangover_timer = HangoverTimer::new(self.config.audio.ambient_mic.post_set_hangover_mins);
 
         // If in mock mode, spawn a continuous simulated audio generator
         if mock_mode {
@@ -121,13 +161,16 @@ impl AudioEngine {
                             info!("Manual file split triggered");
                             Self::split_active_file(
                                 &mut active_writer,
+                                &mut ambient_writer,
                                 &mut active_log,
                                 &output_dir,
                                 &active_mixer_profile,
                                 &mut segment_index,
                                 sample_rate,
+                                self.config.audio.ambient_mic.sample_rate,
                                 self.config.storage.flac_compression_level,
                                 self.config.storage.fsync_interval_secs,
+                                &session_id,
                                 file_start_time,
                                 headroom_guard.current_pad(),
                                 headroom_guard.is_enabled(),
@@ -201,6 +244,7 @@ impl AudioEngine {
                 match gate_action {
                     GateAction::WakeToRecord => {
                         info!("Silence gate woke! Audio detected. Starting recording...");
+                        hangover_timer.cancel();
                         let mut writer = Self::create_new_flac_segment(
                             &output_dir,
                             &active_mixer_profile,
@@ -208,7 +252,15 @@ impl AudioEngine {
                             sample_rate,
                             self.config.storage.flac_compression_level,
                             self.config.storage.fsync_interval_secs,
+                            "",
                         )?;
+                        let start_utc = chrono_date_time_string();
+                        writer.set_metadata(StreamMetadata {
+                            stream_type: "MASTER".to_string(),
+                            session_id: session_id.clone(),
+                            start_time_utc: start_utc.clone(),
+                            sample_offset: 0,
+                        });
 
                         // Prepend pre-roll buffer
                         let preroll_audio = preroll.drain_chronological();
@@ -236,6 +288,29 @@ impl AudioEngine {
                             self.config.storage.fsync_interval_secs,
                             free_gb,
                         );
+
+                        // Start ambient stream if available and not yet open
+                        if ambient_cons_opt.is_some() && ambient_writer.is_none() {
+                            if let Ok(mut amb_w) = Self::create_new_flac_segment(
+                                &output_dir,
+                                &active_mixer_profile,
+                                segment_index,
+                                self.config.audio.ambient_mic.sample_rate,
+                                self.config.storage.flac_compression_level,
+                                self.config.storage.fsync_interval_secs,
+                                "ambient",
+                            ) {
+                                amb_w.set_metadata(StreamMetadata {
+                                    stream_type: "AMBIENT".to_string(),
+                                    session_id: session_id.clone(),
+                                    start_time_utc: start_utc.clone(),
+                                    sample_offset: 0,
+                                });
+                                let _ = log.log_stream_opened("AMBIENT", amb_w.target_path(), self.config.audio.ambient_mic.sample_rate, 0);
+                                ambient_writer = Some(amb_w);
+                            }
+                        }
+
                         active_writer = Some(writer);
                         active_log = Some(log);
                         Self::set_system_power_profile_async("performance");
@@ -251,6 +326,9 @@ impl AudioEngine {
                         }
                         if let Some(writer) = active_writer.take() {
                             let _ = writer.finalize();
+                        }
+                        if ambient_writer.is_some() {
+                            hangover_timer.start();
                         }
                         segment_index += 1;
                     }
@@ -270,13 +348,16 @@ impl AudioEngine {
                                         info!("Max segment duration reached. Performing zero-gap rollover...");
                                         Self::split_active_file(
                                             &mut active_writer,
+                                            &mut ambient_writer,
                                             &mut active_log,
                                             &output_dir,
                                             &active_mixer_profile,
                                             &mut segment_index,
                                             sample_rate,
+                                            self.config.audio.ambient_mic.sample_rate,
                                             self.config.storage.flac_compression_level,
                                             self.config.storage.fsync_interval_secs,
+                                            &session_id,
                                             file_start_time,
                                             headroom_guard.current_pad(),
                                             headroom_guard.is_enabled(),
@@ -295,6 +376,38 @@ impl AudioEngine {
                 }
             } else {
                 tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+
+            // Drain ambient audio samples
+            if let Some(ref mut amb_cons) = ambient_cons_opt {
+                let mut amb_chunk = Vec::with_capacity(512);
+                while let Ok(sample) = amb_cons.pop() {
+                    amb_chunk.push(sample);
+                    if amb_chunk.len() >= 1024 {
+                        break;
+                    }
+                }
+                if !amb_chunk.is_empty() {
+                    if let Some(ref mut amb_w) = ambient_writer {
+                        let _ = amb_w.write_interleaved(&amb_chunk);
+                    }
+                }
+            }
+
+            // Check if ambient hangover timer has expired
+            if hangover_timer.is_active() && hangover_timer.is_expired() {
+                info!(
+                    "Ambient hangover duration ({} mins) expired. Closing ambient stream.",
+                    self.config.audio.ambient_mic.post_set_hangover_mins
+                );
+                if let Some(amb_w) = ambient_writer.take() {
+                    let total_s = amb_w.total_samples();
+                    let p = amb_w.target_path().to_path_buf();
+                    let _ = amb_w.finalize();
+                    if let Some(ref mut l) = active_log {
+                        let _ = l.log_stream_finalized("AMBIENT", &p, total_s);
+                    }
+                }
             }
 
             // Emit Telemetry at periodic interval
@@ -375,6 +488,9 @@ impl AudioEngine {
         }
         if let Some(writer) = active_writer.take() {
             let _ = writer.finalize();
+        }
+        if let Some(amb_w) = ambient_writer.take() {
+            let _ = amb_w.finalize();
         }
 
         Self::set_system_power_profile_async("balanced");
@@ -457,6 +573,7 @@ impl AudioEngine {
         sample_rate: u32,
         compression_level: u32,
         sync_interval_secs: u64,
+        suffix: &str,
     ) -> Result<FlacWriter> {
         let mixer_name = profile
             .as_ref()
@@ -464,7 +581,11 @@ impl AudioEngine {
             .unwrap_or_else(|| "DJM".to_string());
 
         let timestamp = chrono_date_time_string();
-        let filename = format!("{}_{}_pt{:02}.flac", mixer_name, timestamp, segment_index);
+        let filename = if suffix.is_empty() {
+            format!("{}_{}_pt{:02}.flac", mixer_name, timestamp, segment_index)
+        } else {
+            format!("{}_{}_pt{:02}_{}.flac", mixer_name, timestamp, segment_index, suffix)
+        };
         let target_path = output_dir.join(filename);
 
         FlacWriter::new(&target_path, sample_rate, compression_level, sync_interval_secs)
@@ -472,13 +593,16 @@ impl AudioEngine {
 
     fn split_active_file(
         writer: &mut Option<FlacWriter>,
+        ambient_writer: &mut Option<FlacWriter>,
         log: &mut Option<SessionLog>,
         output_dir: &Path,
         profile: &Option<MixerProfile>,
         segment_index: &mut usize,
         sample_rate: u32,
+        ambient_rate: u32,
         compression_level: u32,
         sync_interval_secs: u64,
+        session_id: &str,
         file_start_time: Instant,
         current_pad: i8,
         auto_guard: bool,
@@ -503,16 +627,29 @@ impl AudioEngine {
                 let _ = old_writer.finalize();
             });
         }
+        if let Some(old_amb) = ambient_writer.take() {
+            tokio::task::spawn_blocking(move || {
+                let _ = old_amb.finalize();
+            });
+        }
 
         *segment_index += 1;
-        let new_writer = Self::create_new_flac_segment(
+        let mut new_writer = Self::create_new_flac_segment(
             output_dir,
             profile,
             *segment_index,
             sample_rate,
             compression_level,
             sync_interval_secs,
+            "",
         )?;
+        let start_utc = chrono_date_time_string();
+        new_writer.set_metadata(StreamMetadata {
+            stream_type: "MASTER".to_string(),
+            session_id: session_id.to_string(),
+            start_time_utc: start_utc.clone(),
+            sample_offset: 0,
+        });
 
         let mut new_log = SessionLog::new(new_writer.target_path())?;
         let mixer_name = profile.as_ref().map(|p| p.name).unwrap_or("Pioneer DJ Mixer");
@@ -527,6 +664,27 @@ impl AudioEngine {
             sync_interval_secs,
             free_gb,
         );
+
+        if ambient_rate > 0 {
+            if let Ok(mut new_amb) = Self::create_new_flac_segment(
+                output_dir,
+                profile,
+                *segment_index,
+                ambient_rate,
+                compression_level,
+                sync_interval_secs,
+                "ambient",
+            ) {
+                new_amb.set_metadata(StreamMetadata {
+                    stream_type: "AMBIENT".to_string(),
+                    session_id: session_id.to_string(),
+                    start_time_utc: start_utc,
+                    sample_offset: 0,
+                });
+                let _ = new_log.log_stream_opened("AMBIENT", new_amb.target_path(), ambient_rate, 0);
+                *ambient_writer = Some(new_amb);
+            }
+        }
 
         *writer = Some(new_writer);
         *log = Some(new_log);

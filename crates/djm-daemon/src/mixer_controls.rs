@@ -14,7 +14,7 @@ pub enum MixerError {
 }
 
 pub trait MixerController: Send + Sync {
-    fn configure_rec_out(&mut self, profile: &MixerProfile) -> Result<(), MixerError>;
+    fn configure_rec_out(&mut self, profile: &MixerProfile, include_djm_mic: bool) -> Result<(), MixerError>;
     fn set_capture_pad(&mut self, profile: &MixerProfile, pad_db: i8) -> Result<(), MixerError>;
     fn get_capture_pad(&self, profile: &MixerProfile) -> Result<i8, MixerError>;
 }
@@ -36,7 +36,7 @@ impl AlsaMixerController {
 }
 
 impl MixerController for AlsaMixerController {
-    fn configure_rec_out(&mut self, profile: &MixerProfile) -> Result<(), MixerError> {
+    fn configure_rec_out(&mut self, profile: &MixerProfile, include_djm_mic: bool) -> Result<(), MixerError> {
         let mixer = match self.open_mixer() {
             Ok(m) => m,
             Err(e) => {
@@ -67,7 +67,8 @@ impl MixerController for AlsaMixerController {
             }
         }
 
-        // Pioneer DJ Mixers: Ensure Microphone routing is active and included in REC OUT
+        // Pioneer DJ Mixers: Configure Microphone routing into REC OUT
+        let mic_target_switch = if include_djm_mic { 1 } else { 0 };
         let mic_controls = [
             "Mic to Rec Out",
             "Mic Output",
@@ -79,19 +80,31 @@ impl MixerController for AlsaMixerController {
             let selem_id = SelemId::new(mic_ctrl, 0);
             if let Some(selem) = mixer.find_selem(&selem_id) {
                 if selem.has_capture_switch() {
-                    let _ = selem.set_capture_switch_all(1);
-                    info!("Enabled microphone capture switch '{}' on {}", mic_ctrl, self.card_name);
+                    let _ = selem.set_capture_switch_all(mic_target_switch);
+                    info!(
+                        "Set microphone capture switch '{}' to {} on {}",
+                        mic_ctrl, mic_target_switch, self.card_name
+                    );
                 } else if selem.is_enumerated() {
                     if let Ok(count) = selem.get_enum_items() {
                         for idx in 0..count {
                             if let Ok(item_name) = selem.get_enum_item_name(idx) {
                                 let name_str = item_name.as_str();
-                                if name_str.eq_ignore_ascii_case("on")
-                                    || name_str.eq_ignore_ascii_case("enable")
-                                    || name_str.eq_ignore_ascii_case("rec out")
-                                {
+                                let matches = if include_djm_mic {
+                                    name_str.eq_ignore_ascii_case("on")
+                                        || name_str.eq_ignore_ascii_case("enable")
+                                        || name_str.eq_ignore_ascii_case("rec out")
+                                } else {
+                                    name_str.eq_ignore_ascii_case("off")
+                                        || name_str.eq_ignore_ascii_case("disable")
+                                        || name_str.eq_ignore_ascii_case("none")
+                                };
+                                if matches {
                                     let _ = selem.set_enum_item(SelemChannelId::mono(), idx);
-                                    info!("Configured mic control '{}' to '{}' on {}", mic_ctrl, name_str, self.card_name);
+                                    info!(
+                                        "Configured mic control '{}' to '{}' on {}",
+                                        mic_ctrl, name_str, self.card_name
+                                    );
                                     break;
                                 }
                             }
@@ -157,6 +170,7 @@ impl MixerController for AlsaMixerController {
 pub struct MockMixerController {
     pub current_pad: i8,
     pub routing_configured: bool,
+    pub mic_included: bool,
     pub set_calls: Vec<i8>,
 }
 
@@ -165,16 +179,18 @@ impl Default for MockMixerController {
         Self {
             current_pad: -19,
             routing_configured: false,
+            mic_included: false,
             set_calls: Vec::new(),
         }
     }
 }
 
 impl MixerController for MockMixerController {
-    fn configure_rec_out(&mut self, profile: &MixerProfile) -> Result<(), MixerError> {
+    fn configure_rec_out(&mut self, profile: &MixerProfile, include_djm_mic: bool) -> Result<(), MixerError> {
         if profile.routing_control_name.is_some() {
             self.routing_configured = true;
         }
+        self.mic_included = include_djm_mic;
         Ok(())
     }
 
@@ -199,8 +215,12 @@ mod tests {
         let profile = find_profile_by_usb_id(0x2b73, 0x000a).unwrap(); // DJM-900NXS2
         let mut mock = MockMixerController::default();
 
-        mock.configure_rec_out(&profile).unwrap();
+        mock.configure_rec_out(&profile, false).unwrap();
         assert!(mock.routing_configured);
+        assert!(!mock.mic_included);
+
+        mock.configure_rec_out(&profile, true).unwrap();
+        assert!(mock.mic_included);
 
         mock.set_capture_pad(&profile, -15).unwrap();
         assert_eq!(mock.get_capture_pad(&profile).unwrap(), -15);

@@ -85,6 +85,42 @@ impl SessionLog {
         )
     }
 
+    pub fn log_stream_opened(
+        &mut self,
+        stream_type: &str,
+        path: &Path,
+        sample_rate: u32,
+        offset_samples: u64,
+    ) -> io::Result<()> {
+        self.log_event(
+            "STREAM_OPENED",
+            &format!(
+                "Stream [{}]: {} ({} Hz, sample offset: {})",
+                stream_type,
+                path.display(),
+                sample_rate,
+                offset_samples
+            ),
+        )
+    }
+
+    pub fn log_stream_finalized(
+        &mut self,
+        stream_type: &str,
+        path: &Path,
+        total_samples: u64,
+    ) -> io::Result<()> {
+        self.log_event(
+            "STREAM_FINALIZED",
+            &format!(
+                "Stream [{}] finalized: {} ({} samples written)",
+                stream_type,
+                path.display(),
+                total_samples
+            ),
+        )
+    }
+
     pub fn log_event(&mut self, event: &str, message: &str) -> io::Result<()> {
         let now = chrono_now_string();
         let line = format!("[{}] [{}] {}\n", now, event, message);
@@ -124,14 +160,18 @@ mod tests {
         let flac_path = tmp_dir.join("test_session.flac");
         let mut logger = SessionLog::new(&flac_path).unwrap();
         logger.log_start(&flac_path, "DJM-V10", 96000, -19, true, 5, 2, 450.0).unwrap();
+        logger.log_stream_opened("AMBIENT", &tmp_dir.join("ambient.flac"), 48000, 0).unwrap();
         logger.log_progress(50, 120, -7.9, 0, -19).unwrap();
         logger.log_event("BOOKMARK", "Track ID: Bicep - Glue").unwrap();
         logger.log_event("PAD_CHANGE", "Auto-stepped from -15dB to -19dB").unwrap();
+        logger.log_stream_finalized("AMBIENT", &tmp_dir.join("ambient.flac"), 5760000).unwrap();
         logger.log_stop("Manual split", 120, 50, -7.9, 0).unwrap();
 
         let log_content = std::fs::read_to_string(logger.path()).unwrap();
         assert!(log_content.contains("[SESSION_START]"));
         assert!(log_content.contains("[HARDWARE]"));
+        assert!(log_content.contains("[STREAM_OPENED] Stream [AMBIENT]"));
+        assert!(log_content.contains("[STREAM_FINALIZED] Stream [AMBIENT]"));
         assert!(log_content.contains("[STATUS]"));
         assert!(log_content.contains("[BOOKMARK] Track ID: Bicep - Glue"));
         assert!(log_content.contains("[PAD_CHANGE]"));

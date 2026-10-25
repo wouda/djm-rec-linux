@@ -6,6 +6,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
+#[derive(Debug, Clone)]
+pub struct StreamMetadata {
+    pub stream_type: String,
+    pub session_id: String,
+    pub start_time_utc: String,
+    pub sample_offset: u64,
+}
+
 pub struct FlacWriter {
     target_path: PathBuf,
     part_path: PathBuf,
@@ -19,6 +27,7 @@ pub struct FlacWriter {
     checkpoint_interval: Duration,
     peak_sample: i32,
     sum_squares: f64,
+    metadata: Option<StreamMetadata>,
 }
 
 // FlacWriter has exclusive ownership of the encoder and can be moved across threads safely.
@@ -75,7 +84,12 @@ impl FlacWriter {
             checkpoint_interval: Duration::from_secs(30),
             peak_sample: 0,
             sum_squares: 0.0,
+            metadata: None,
         })
+    }
+
+    pub fn set_metadata(&mut self, metadata: StreamMetadata) {
+        self.metadata = Some(metadata);
     }
 
     /// Appends interleaved stereo 24-bit samples: [l0, r0, l1, r1, ...]
@@ -195,6 +209,19 @@ impl FlacWriter {
             std::fs::rename(&self.part_path, &self.target_path)
                 .context("Failed to rename completed .flac.part to .flac")?;
             info!("Finalized recording saved to: {}", self.target_path.display());
+
+            if let Some(ref meta) = self.metadata {
+                let status = std::process::Command::new("metaflac")
+                    .arg(format!("--set-tag=STREAM_TYPE={}", meta.stream_type))
+                    .arg(format!("--set-tag=SESSION_ID={}", meta.session_id))
+                    .arg(format!("--set-tag=START_TIME_UTC={}", meta.start_time_utc))
+                    .arg(format!("--set-tag=SAMPLE_OFFSET={}", meta.sample_offset))
+                    .arg(&self.target_path)
+                    .status();
+                if let Err(e) = status {
+                    warn!("metaflac tag writing skipped or failed: {}", e);
+                }
+            }
         }
 
         Ok(self.target_path)
@@ -276,6 +303,38 @@ mod tests {
         let out_path = writer.finalize().expect("finalize failed");
         assert!(out_path.exists());
         assert!(std::fs::metadata(&out_path).unwrap().len() > 1000);
+
+        let _ = std::fs::remove_file(&out_path);
+    }
+
+    #[test]
+    fn test_flac_writer_with_stream_metadata() {
+        let tmp_dir = std::env::temp_dir();
+        let target = tmp_dir.join("test_meta_flac.flac");
+        let _ = std::fs::remove_file(&target);
+
+        let mut writer = FlacWriter::new(&target, 48000, 5, 1).expect("failed to create flac writer");
+        writer.set_metadata(StreamMetadata {
+            stream_type: "AMBIENT".to_string(),
+            session_id: "test-session-123".to_string(),
+            start_time_utc: "2026-10-25T18:00:00Z".to_string(),
+            sample_offset: 96000,
+        });
+
+        let samples = vec![(1000, -1000); 1000];
+        writer.write_interleaved(&samples).unwrap();
+        let out_path = writer.finalize().unwrap();
+        assert!(out_path.exists());
+
+        // Check metadata with metaflac command if available
+        let output = std::process::Command::new("metaflac")
+            .arg("--show-tag=STREAM_TYPE")
+            .arg(&out_path)
+            .output();
+        if let Ok(out) = output {
+            let s = String::from_utf8_lossy(&out.stdout);
+            assert!(s.contains("STREAM_TYPE=AMBIENT"));
+        }
 
         let _ = std::fs::remove_file(&out_path);
     }

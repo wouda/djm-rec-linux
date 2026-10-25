@@ -1,5 +1,8 @@
 # djm-rec-linux 🎛️
 
+[![Release](https://img.shields.io/github/v/release/wouda/djm-rec-linux?color=brightgreen&label=Latest%20Release)](https://github.com/wouda/djm-rec-linux/releases/latest)
+[![License](https://img.shields.io/badge/License-Proprietary-blue.svg)](LICENSE)
+
 > [!NOTE]
 > **Notice**: `djm-rec-linux` is developed specifically for recording an upcoming [craterdnb.com](https://craterdnb.com) event. All rights reserved. Totally vibe coded. ⚡🎧
 
@@ -12,7 +15,10 @@ Designed for Linux (CachyOS / Arch Linux), `djm-rec-linux` transforms a laptop, 
 ## Key Features
 
 - **Automated USB-B Mixer Detection**: Instantly identifies connected Pioneer & AlphaTheta mixers (`DJM-900NXS2`, `DJM-V10`, `DJM-A9`, `DJM-900NXS`, `DJM-850`, `DJM-750MK2`, `DJM-450`, `DJM-250MK2`).
-- **Microphone Routing into REC OUT**: Automatically unmutes and routes mixer microphone channels to REC OUT (Ch 5/6) so MC vocals and guest hosts are never lost.
+- **Pristine Master Music by Default**: Automatically unlinks mixer microphone talk-over from REC OUT master stream so the DJ recording is 100% clean music.
+- **Dedicated DJM Microphone Recording**: Optionally captures the mixer microphone into an isolated, parallel FLAC stream (`..._djm_mic.flac`).
+- **Simultaneous Ambient Crowd Recording**: Records room energy and crowd chatter via the recording device's built-in or USB microphone into a synchronized FLAC file (`..._ambient.flac`), with sample-accurate DAW alignment metadata.
+- **Post-Set Trailing Hangover (15m Default)**: Keeps ambient room recording active after the mixer stops playing to capture after-hours closing atmosphere and applause.
 - **Hardware Headroom Protection (-19 dB)**: Configures ALSA hardware `Capture Level` to `-19 dB`, matching the physical mixer 0 dB reference line and leaving 19 dB of digital headroom for club DJs driving channels into the red.
 - **Auto-Guard Dynamic Attenuation**: Continuously monitors signal peaks; if a DJ exceeds `-0.5 dBFS`, `Auto-Guard` instantly steps down gain toward `-19 dB` and logs the exact timestamp in the session audit log.
 - **Silence Gate & 2.0s Circular RAM Pre-Roll Buffer**: Audio below `-65 dBFS` is buffered in RAM without creating empty files. When the first track drops, the pre-roll buffer is prepended to disk so the first beat is never clipped.
@@ -71,7 +77,21 @@ Designed for Linux (CachyOS / Arch Linux), `djm-rec-linux` transforms a laptop, 
 
 ## Installation & Setup
 
-### 1. Build from Source
+### 1. Download Pre-built Release (Recommended)
+
+Download the latest pre-compiled bundle from the **[GitHub Releases](https://github.com/wouda/djm-rec-linux/releases/latest)** page:
+
+- **Linux x86_64** (Laptops, Mini PCs, Desktops): [djm-rec-linux-v0.2.0-x86_64.tar.gz](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-rec-linux-v0.2.0-x86_64.tar.gz)
+- **Linux aarch64** (Raspberry Pi 4 / 5): [djm-rec-linux-v0.2.0-aarch64.tar.gz](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-rec-linux-v0.2.0-aarch64.tar.gz)
+
+```bash
+# Extract and run setup
+tar -xzvf djm-rec-linux-*.tar.gz
+cd djm-rec-linux-*/bin
+./djm-box setup
+```
+
+### 2. Build from Source (Alternative)
 ```bash
 # Clone the repository
 git clone https://github.com/wouda/djm-rec-linux.git
@@ -81,13 +101,13 @@ cd djm-rec-linux
 cargo build --release
 ```
 
-### 2. Run Appliance Setup
+### 3. Run Appliance Setup
 The `setup` command automatically installs system dependencies (`alsa-lib`, `flac`, `pipewire`, `bluez`, `avahi`), installs binaries to `~/.cargo/bin/`, sets up systemd user services, configures WirePlumber pro-audio rules, and ensures lid-close sleep is disabled:
 ```bash
 ./target/release/djm-box setup
 ```
 
-### 3. Start Background Services
+### 4. Start Background Services
 ```bash
 systemctl --user enable --now djm-box-daemon djm-box-remote
 ```
