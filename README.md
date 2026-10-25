@@ -1,10 +1,10 @@
 # djm-rec-linux 🎛️
 
 [![Release](https://img.shields.io/github/v/release/wouda/djm-rec-linux?color=brightgreen&label=Latest%20Release)](https://github.com/wouda/djm-rec-linux/releases/latest)
-[![License](https://img.shields.io/badge/License-Proprietary-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 > [!NOTE]
-> **Notice**: `djm-rec-linux` is developed specifically for recording an upcoming [craterdnb.com](https://craterdnb.com) event. All rights reserved. Totally vibe coded. ⚡🎧
+> **Notice**: `djm-rec-linux` is developed specifically for recording an upcoming [craterdnb.com](https://craterdnb.com) event. Totally vibe coded. ⚡🎧
 
 **Autonomous, bulletproof DJ mixer recording appliance for Pioneer and AlphaTheta club mixers.**
 
@@ -172,4 +172,4 @@ Recordings are saved to `~/Music/DJ_Recordings/` (configurable in `config.toml`)
 
 ## License
 
-All Rights Reserved. Developed specifically for recording an upcoming [craterdnb.com](https://craterdnb.com) event — totally vibe coded.
+This project is licensed under the [MIT License](LICENSE).
