@@ -38,6 +38,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libdbus-1-dev libflac-dev pkg-config
 
+      - name: Symlink libflac.so for flac-sys
+        run: |
+          for dir in /usr/lib /usr/lib/*-linux-gnu* /usr/lib64 /usr/local/lib; do
+            if [ -f "$dir/libFLAC.so" ] && [ ! -f "$dir/libflac.so" ]; then
+              sudo ln -sf "$dir/libFLAC.so" "$dir/libflac.so" || true
+            fi
+          done
+
       - name: Build release binaries
         run: |
           cargo build --release --target ${{ matrix.target }}
