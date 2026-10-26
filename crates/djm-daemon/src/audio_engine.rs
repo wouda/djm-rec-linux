@@ -1,4 +1,4 @@
-use crate::alsa_capture::SyntheticCapture;
+use crate::alsa_capture::{AlsaCapture, SyntheticCapture};
 use crate::ambient_capture::{detect_host_capture_device, AmbientCaptureLoop, HangoverTimer};
 use crate::flac_writer::{scan_and_repair_orphaned_parts, FlacWriter, StreamMetadata};
 use crate::headroom_guard::HeadroomGuard;
@@ -12,6 +12,7 @@ use djm_common::config::AppConfig;
 use djm_common::profile::{find_profile_by_usb_id, match_mixer_from_card_id, MixerProfile};
 use djm_common::protocol::{ControlCommand, RecordingState, Telemetry};
 use rtrb::RingBuffer;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -50,7 +51,7 @@ impl AudioEngine {
         info!("Audio Engine started. Awaiting DJ mixer connection...");
 
         // Setup ring buffer for real-time audio (100ms capacity)
-        let sample_rate = 96000;
+        let mut sample_rate = 96000u32;
         let ring_capacity = (sample_rate / 10) as usize;
         let (producer, mut consumer) = RingBuffer::<(i32, i32)>::new(ring_capacity);
 
@@ -79,6 +80,18 @@ impl AudioEngine {
         let mut clip_counter = 0u16;
         let mut peak_l_hold = -9600i16;
         let mut peak_r_hold = -9600i16;
+        let mut live_peak_l = -9600i16;
+        let mut live_peak_r = -9600i16;
+        let mut live_rms_l = -9600i16;
+        let mut live_rms_r = -9600i16;
+        let mut recent_events: VecDeque<String> = VecDeque::with_capacity(12);
+
+        let push_event = |events: &mut VecDeque<String>, msg: String| {
+            if events.len() >= 10 {
+                events.pop_front();
+            }
+            events.push_back(msg);
+        };
 
         let session_id = format!(
             "rec_{}",
@@ -88,16 +101,25 @@ impl AudioEngine {
                 .as_secs()
         );
 
-        let active_mixer_profile: Option<MixerProfile> = if mock_mode {
-            Some(find_profile_by_usb_id(0x2b73, 0x000a).unwrap())
-        } else {
-            Self::probe_connected_mixer()
-        };
+        let mut active_card_idx: Option<i32> = None;
+        let mut active_mixer_profile: Option<MixerProfile> = None;
+        let mut capture_thread_alive = Arc::new(AtomicBool::new(false));
+        let mut last_mixer_probe = Instant::now() - Duration::from_secs(10);
 
-        if let Some(ref prof) = active_mixer_profile {
+        if mock_mode {
+            let prof = find_profile_by_usb_id(0x2b73, 0x000a).unwrap();
+            sample_rate = prof.native_sample_rate;
+            active_mixer_profile = Some(prof);
             silence_gate.set_state(RecordingState::ArmedSilent);
-            let mut controller = AlsaMixerController::new("default");
-            let _ = controller.configure_rec_out(prof, self.config.audio.djm_mic.include_in_master);
+            capture_thread_alive.store(true, Ordering::Relaxed);
+            push_event(&mut recent_events, "Mock mode: Simulated Pioneer DJM-900NXS2 active".to_string());
+
+            let synth_running = self.running.clone();
+            let mock_producer = producer;
+            tokio::task::spawn_blocking(move || {
+                let synth = SyntheticCapture::new(48000, synth_running.clone());
+                synth.run_continuous(mock_producer, 440.0, 0.4);
+            });
         } else {
             silence_gate.set_state(RecordingState::Disconnected);
         }
@@ -130,28 +152,77 @@ impl AudioEngine {
         let mut ambient_writer: Option<FlacWriter> = None;
         let mut hangover_timer = HangoverTimer::new(self.config.audio.ambient_mic.post_set_hangover_mins);
 
-        // If in mock mode, spawn a continuous simulated audio generator
-        if mock_mode {
-            let synth_running = self.running.clone();
-            let mock_producer = producer;
-            tokio::task::spawn_blocking(move || {
-                let synth = SyntheticCapture::new(48000, synth_running.clone());
-                synth.run_continuous(mock_producer, 440.0, 0.4);
-            });
-        }
-
         let mut last_telemetry_emit = Instant::now();
         let telemetry_period = Duration::from_millis(25); // 40 Hz telemetry emission
         let mut last_status_log_time = Instant::now();
         let mut last_status_log_mb = 0u64;
 
         while self.running.load(Ordering::Relaxed) {
+            // Dynamic USB Mixer Hotplug / Capture Thread Supervision (when not in mock_mode)
+            if !mock_mode {
+                if active_mixer_profile.is_some() && !capture_thread_alive.load(Ordering::Relaxed) {
+                    warn!("DJ mixer capture stream ended or USB disconnected.");
+                    push_event(&mut recent_events, "DJ mixer disconnected. Waiting for USB reconnect...".to_string());
+                    active_mixer_profile = None;
+                    active_card_idx = None;
+                    silence_gate.set_state(RecordingState::Disconnected);
+                    live_peak_l = -9600;
+                    live_peak_r = -9600;
+                    live_rms_l = -9600;
+                    live_rms_r = -9600;
+                }
+
+                if active_mixer_profile.is_none() && last_mixer_probe.elapsed() >= Duration::from_secs(2) {
+                    last_mixer_probe = Instant::now();
+                    if let Some((card_idx, prof)) = Self::probe_connected_mixer() {
+                        sample_rate = prof.native_sample_rate;
+                        let new_cap = (sample_rate / 10) as usize;
+                        let (new_prod, new_cons) = RingBuffer::<(i32, i32)>::new(new_cap);
+                        consumer = new_cons;
+
+                        let hw_card = format!("hw:{}", card_idx);
+                        let mut controller = AlsaMixerController::new(&hw_card);
+                        let _ = controller.configure_rec_out(&prof, self.config.audio.djm_mic.include_in_master);
+                        let _ = controller.set_capture_pad(&prof, headroom_guard.current_pad());
+
+                        silence_gate.set_state(RecordingState::ArmedSilent);
+                        let cap_alive = Arc::new(AtomicBool::new(true));
+                        capture_thread_alive = cap_alive.clone();
+                        let engine_running = self.running.clone();
+                        let cap_prof = prof.clone();
+
+                        let hw_dev = format!("hw:{},0", card_idx);
+                        push_event(
+                            &mut recent_events,
+                            format!(
+                                "Connected {} on {} ({} Hz, {}ch REC OUT {:?}, Pad {} dB)",
+                                prof.name, hw_dev, prof.native_sample_rate, prof.total_channels, prof.rec_out_channels, headroom_guard.current_pad()
+                            ),
+                        );
+
+                        std::thread::Builder::new()
+                            .name("djm-alsa-capture".to_string())
+                            .spawn(move || {
+                                let cap = AlsaCapture::new(cap_prof.clone(), &hw_dev, engine_running.clone());
+                                if let Err(e) = cap.run_capture_loop(new_prod) {
+                                    warn!("ALSA capture on {} exited: {}", hw_dev, e);
+                                }
+                                cap_alive.store(false, Ordering::Relaxed);
+                            })?;
+
+                        active_card_idx = Some(card_idx);
+                        active_mixer_profile = Some(prof);
+                    }
+                }
+            }
+
             // Check incoming control commands
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     ControlCommand::Auth(_) => {}
                     ControlCommand::DropBookmark(note) => {
                         let note_str = note.unwrap_or_else(|| "Manual Bookmark".to_string());
+                        push_event(&mut recent_events, format!("Bookmark dropped: {}", note_str));
                         if let Some(ref mut logger) = active_log {
                             let _ = logger.log_event("BOOKMARK", &note_str);
                         }
@@ -159,6 +230,7 @@ impl AudioEngine {
                     ControlCommand::SplitFile => {
                         if active_writer.is_some() {
                             info!("Manual file split triggered");
+                            push_event(&mut recent_events, "Manual file split triggered".to_string());
                             Self::split_active_file(
                                 &mut active_writer,
                                 &mut ambient_writer,
@@ -186,6 +258,11 @@ impl AudioEngine {
                     ControlCommand::SetHardwarePad(pad) => {
                         info!("Setting hardware capture pad to {} dB", pad);
                         headroom_guard.set_pad_manual(pad);
+                        if let (Some(card_idx), Some(ref prof)) = (active_card_idx, &active_mixer_profile) {
+                            let mut controller = AlsaMixerController::new(&format!("hw:{}", card_idx));
+                            let _ = controller.set_capture_pad(prof, pad);
+                        }
+                        push_event(&mut recent_events, format!("Hardware capture pad set to {} dB", pad));
                         if let Some(ref mut logger) = active_log {
                             let _ = logger.log_event("PAD_MANUAL", &format!("Pad set to {} dB", pad));
                         }
@@ -194,11 +271,15 @@ impl AudioEngine {
                         let new_val = !headroom_guard.is_enabled();
                         headroom_guard.set_enabled(new_val);
                         info!("Auto-headroom guard toggled to {}", new_val);
+                        push_event(&mut recent_events, format!("Auto-Headroom Guard toggled {}", if new_val { "ON" } else { "OFF" }));
                     }
                     ControlCommand::ResetPeaks => {
                         clip_counter = 0;
                         peak_l_hold = -9600;
                         peak_r_hold = -9600;
+                        live_peak_l = -9600;
+                        live_peak_r = -9600;
+                        push_event(&mut recent_events, "Reset peak hold & clip counters".to_string());
                     }
                     ControlCommand::OpenPairingWindow => {}
                     ControlCommand::ToggleHotspot => {}
@@ -221,6 +302,14 @@ impl AudioEngine {
                         "Auto-Headroom Guard triggered! Stepped pad from {} dB to {} dB",
                         step_event.old_pad_db, step_event.new_pad_db
                     );
+                    if let (Some(card_idx), Some(ref prof)) = (active_card_idx, &active_mixer_profile) {
+                        let mut controller = AlsaMixerController::new(&format!("hw:{}", card_idx));
+                        let _ = controller.set_capture_pad(prof, step_event.new_pad_db);
+                    }
+                    push_event(
+                        &mut recent_events,
+                        format!("Auto-Guard stepped pad from {} dB to {} dB", step_event.old_pad_db, step_event.new_pad_db),
+                    );
                     if let Some(ref mut logger) = active_log {
                         let _ = logger.log_event(
                             "AUTO_GUARD_STEP",
@@ -233,9 +322,13 @@ impl AudioEngine {
                 }
 
                 // Process DSP Levels
-                let (peak_l, peak_r, _rms_l, _rms_r, clips) = Self::calculate_dsp_metrics(&chunk);
+                let (peak_l, peak_r, rms_l, rms_r, clips) = Self::calculate_dsp_metrics(&chunk);
                 if peak_l > peak_l_hold { peak_l_hold = peak_l; }
                 if peak_r > peak_r_hold { peak_r_hold = peak_r; }
+                live_peak_l = if peak_l >= live_peak_l { peak_l } else { (live_peak_l - 30).max(peak_l).max(-9600) };
+                live_peak_r = if peak_r >= live_peak_r { peak_r } else { (live_peak_r - 30).max(peak_r).max(-9600) };
+                live_rms_l = rms_l.max(-9600);
+                live_rms_r = rms_r.max(-9600);
                 clip_counter = clip_counter.saturating_add(clips);
 
                 // Process Silence Gate
@@ -312,12 +405,21 @@ impl AudioEngine {
                             }
                         }
 
+                        let fname = writer
+                            .target_path()
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        push_event(&mut recent_events, format!("Recording started: {}", fname));
+
                         active_writer = Some(writer);
                         active_log = Some(log);
                         Self::set_system_power_profile_async("performance");
                     }
                     GateAction::SilenceTimeoutSplit => {
                         info!("Silence timeout reached. Closing current recording segment...");
+                        push_event(&mut recent_events, "Silence timeout reached: segment closed & finalized".to_string());
                         Self::set_system_power_profile_async("balanced");
                         if let Some(mut log) = active_log.take() {
                             let dur = file_start_time.elapsed().as_secs();
@@ -347,6 +449,7 @@ impl AudioEngine {
                                     );
                                     if file_start_time.elapsed() >= max_dur {
                                         info!("Max segment duration reached. Performing zero-gap rollover...");
+                                        push_event(&mut recent_events, "Max duration reached: zero-gap segment rollover".to_string());
                                         Self::split_active_file(
                                             &mut active_writer,
                                             &mut ambient_writer,
@@ -447,10 +550,10 @@ impl AudioEngine {
                     hw_pad_db: headroom_guard.current_pad(),
                     auto_guard_active: headroom_guard.is_enabled(),
                     silence_countdown_active: silence_gate.is_silence_countdown_active(),
-                    peak_l_centi_db: peak_l_hold,
-                    peak_r_centi_db: peak_r_hold,
-                    rms_l_centi_db: -2400,
-                    rms_r_centi_db: -2400,
+                    peak_l_centi_db: live_peak_l.max(-9600),
+                    peak_r_centi_db: live_peak_r.max(-9600),
+                    rms_l_centi_db: live_rms_l.max(-9600),
+                    rms_r_centi_db: live_rms_r.max(-9600),
                     clip_count: clip_counter,
                     active_file_duration_secs: duration_secs,
                     active_file_size_mb: file_size_mb,
@@ -468,7 +571,7 @@ impl AudioEngine {
                             .to_string()
                     }),
                     pause_countdown_secs: silence_gate.silence_countdown_remaining(),
-                    recent_logs: Vec::new(),
+                    recent_logs: recent_events.iter().cloned().collect(),
                 };
 
                 let _ = telemetry_tx.send(telemetry);
@@ -552,15 +655,16 @@ impl AudioEngine {
         }
     }
 
-    fn probe_connected_mixer() -> Option<MixerProfile> {
+    fn probe_connected_mixer() -> Option<(i32, MixerProfile)> {
         // Scans ALSA cards for Pioneer/AlphaTheta DJ mixers
         if let Ok(cards) = alsa::card::Iter::new().collect::<Result<Vec<_>, _>>() {
             for card in cards {
-                if let Ok(name) = card.get_name() {
-                    if let Some(prof) = match_mixer_from_card_id(&name) {
-                        info!("Detected connected DJ mixer: {} (card {})", prof.name, card.get_index());
-                        return Some(prof);
-                    }
+                let idx = card.get_index();
+                let name = card.get_name().unwrap_or_default();
+                let longname = card.get_longname().unwrap_or_default();
+                if let Some(prof) = match_mixer_from_card_id(&name).or_else(|| match_mixer_from_card_id(&longname)) {
+                    info!("Detected connected DJ mixer: {} (card {})", prof.name, idx);
+                    return Some((idx, prof));
                 }
             }
         }

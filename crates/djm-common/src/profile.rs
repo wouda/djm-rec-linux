@@ -39,9 +39,21 @@ pub static PROFILES: &[MixerProfile] = &[
         native_sample_rate: 96000,
         bit_depth: 24,
         rec_out_channels: (8, 9),
-        routing_control_name: None,
-        routing_control_value: None,
-        capture_pad_control_name: "Capture Level",
+        routing_control_name: Some("Input 5"),
+        routing_control_value: Some("Rec Out"),
+        capture_pad_control_name: "Master Input Level",
+    },
+    MixerProfile {
+        name: "Pioneer DJM-V10",
+        vendor_id: VENDOR_ALPHATHETA_PIONEER,
+        product_id: 0x0034,
+        total_channels: 12,
+        native_sample_rate: 96000,
+        bit_depth: 24,
+        rec_out_channels: (8, 9),
+        routing_control_name: Some("Input 5"),
+        routing_control_value: Some("Rec Out"),
+        capture_pad_control_name: "Master Input Level",
     },
     MixerProfile {
         name: "Pioneer DJM-V10",
@@ -51,9 +63,9 @@ pub static PROFILES: &[MixerProfile] = &[
         native_sample_rate: 96000,
         bit_depth: 24,
         rec_out_channels: (8, 9),
-        routing_control_name: None,
-        routing_control_value: None,
-        capture_pad_control_name: "Capture Level Capture Switch",
+        routing_control_name: Some("Input 5"),
+        routing_control_value: Some("Rec Out"),
+        capture_pad_control_name: "Master Input Level",
     },
     MixerProfile {
         name: "Pioneer DJM-900NXS",
@@ -193,9 +205,13 @@ mod tests {
         assert_eq!(a9.native_sample_rate, 96000);
         assert_eq!(a9.rec_out_channels, (8, 9));
 
-        let v10 = find_profile_by_usb_id(0x2b73, 0x002d).expect("DJM-V10 not found");
+        let v10 = find_profile_by_usb_id(0x2b73, 0x0034).expect("DJM-V10 (0x0034) not found");
         assert_eq!(v10.native_sample_rate, 96000);
-        assert_eq!(v10.capture_pad_control_name, "Capture Level Capture Switch");
+        assert_eq!(v10.capture_pad_control_name, "Master Input Level");
+        assert_eq!(v10.routing_control_name, Some("Input 5"));
+
+        let v10_legacy = find_profile_by_usb_id(0x2b73, 0x002d).expect("DJM-V10 (0x002d) not found");
+        assert_eq!(v10_legacy.native_sample_rate, 96000);
 
         let nxs1 = find_profile_by_usb_id(0x08e4, 0x015c).expect("DJM-900NXS not found");
         assert_eq!(nxs1.native_sample_rate, 48000);

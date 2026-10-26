@@ -185,13 +185,25 @@ WantedBy=default.target
 
                 if src.exists() {
                     let dest = cargo_bin_dir.join(bin_name);
-                    let _ = fs::remove_file(&dest);
-                    fs::copy(&src, &dest)?;
+                    let same_file = src == dest
+                        || (dest.exists()
+                            && src.canonicalize().ok() == dest.canonicalize().ok()
+                            && src.canonicalize().is_ok());
+
+                    if same_file {
+                        info!("  ✓ {} is already up-to-date at {}", bin_name, dest.display());
+                        continue;
+                    }
+
+                    let tmp_dest = cargo_bin_dir.join(format!(".{}.tmp", bin_name));
+                    let _ = fs::remove_file(&tmp_dest);
+                    fs::copy(&src, &tmp_dest)?;
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        let _ = fs::set_permissions(&dest, fs::Permissions::from_mode(0o755));
+                        let _ = fs::set_permissions(&tmp_dest, fs::Permissions::from_mode(0o755));
                     }
+                    fs::rename(&tmp_dest, &dest)?;
                     info!("  ✓ Installed {} -> {}", src.display(), dest.display());
                 }
             }

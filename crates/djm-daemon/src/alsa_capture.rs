@@ -52,10 +52,18 @@ impl AlsaCapture {
         // Configure hardware parameters
         let hwp = HwParams::any(&pcm)?;
         hwp.set_access(Access::RWInterleaved)?;
-        // 24-bit PCM is typically packaged as S24 or S32 (in 32-bit container)
-        if hwp.set_format(Format::s24()).is_err() {
-            hwp.set_format(Format::s32())?;
-        }
+
+        // Pioneer / AlphaTheta USB mixers natively use S24_3LE (3-byte 24-bit PCM) on hw:X,0,
+        // while plughw or other interfaces may use S32_LE or S24_LE (4-byte container).
+        let (sample_format, bytes_per_sample) = if hwp.set_format(Format::S243LE).is_ok() {
+            (Format::S243LE, 3usize)
+        } else if hwp.set_format(Format::s32()).is_ok() {
+            (Format::s32(), 4usize)
+        } else {
+            hwp.set_format(Format::s24())?;
+            (Format::s24(), 4usize)
+        };
+
         hwp.set_channels(self.profile.total_channels)?;
         hwp.set_rate(self.profile.native_sample_rate, ValueOr::Nearest)?;
 
@@ -73,42 +81,65 @@ impl AlsaCapture {
         );
 
         let frames_per_period = period_size as usize;
-        let mut read_buffer = vec![0i32; frames_per_period * channels];
+        let frame_bytes = channels * bytes_per_sample;
+        let mut read_buffer = vec![0u8; frames_per_period * frame_bytes];
 
-        let io = pcm.io_i32()?;
+        let io = pcm.io_bytes();
 
-        info!("Starting ALSA capture loop...");
+        info!(
+            "Starting ALSA capture loop on {} (format={:?}, {} bytes/sample, rec_out=({}, {}))...",
+            self.device_name, sample_format, bytes_per_sample, rec_l_idx, rec_r_idx
+        );
 
         while self.running.load(Ordering::Relaxed) {
             match io.readi(&mut read_buffer) {
                 Ok(frames_read) => {
                     for f in 0..frames_read {
-                        let offset = f * channels;
-                        let sample_l = read_buffer[offset + rec_l_idx];
-                        let sample_r = read_buffer[offset + rec_r_idx];
+                        let frame_offset = f * frame_bytes;
+                        let l_off = frame_offset + rec_l_idx * bytes_per_sample;
+                        let r_off = frame_offset + rec_r_idx * bytes_per_sample;
 
-                        // Normalize to 24-bit signed integer (-8388608..8388607)
-                        let s24_l = sample_l >> 8;
-                        let s24_r = sample_r >> 8;
+                        let (s24_l, s24_r) = if sample_format == Format::S243LE || sample_format == Format::s24() {
+                            let l = ((read_buffer[l_off + 2] as i8 as i32) << 16)
+                                | ((read_buffer[l_off + 1] as i32) << 8)
+                                | (read_buffer[l_off] as i32);
+                            let r = ((read_buffer[r_off + 2] as i8 as i32) << 16)
+                                | ((read_buffer[r_off + 1] as i32) << 8)
+                                | (read_buffer[r_off] as i32);
+                            (l, r)
+                        } else {
+                            let l32 = i32::from_le_bytes([
+                                read_buffer[l_off],
+                                read_buffer[l_off + 1],
+                                read_buffer[l_off + 2],
+                                read_buffer[l_off + 3],
+                            ]);
+                            let r32 = i32::from_le_bytes([
+                                read_buffer[r_off],
+                                read_buffer[r_off + 1],
+                                read_buffer[r_off + 2],
+                                read_buffer[r_off + 3],
+                            ]);
+                            (l32 >> 8, r32 >> 8)
+                        };
 
-                        if let Err(_) = producer.push((s24_l, s24_r)) {
+                        if producer.push((s24_l, s24_r)).is_err() {
                             // Ring buffer overrun, drop frame to maintain realtime capture
                         }
                     }
                 }
                 Err(err) => {
-                    // Check for disconnection or underrun
                     let errno = err.errno();
-                    if errno == nix::libc::ENODEV || errno == nix::libc::EPIPE || errno == nix::libc::EBADFD {
+                    if errno == nix::libc::ENODEV || errno == nix::libc::EBADFD {
                         error!("ALSA capture device disconnected: {}", err);
                         return Err(CaptureError::Disconnected);
                     } else if errno == nix::libc::EAGAIN || errno == nix::libc::EINTR {
                         continue;
                     } else {
-                        // Attempt xrun recovery
+                        // Attempt xrun / suspend recovery
                         if let Err(rec_err) = pcm.try_recover(err, false) {
                             error!("ALSA recover failed: {}", rec_err);
-                            return Err(CaptureError::Alsa(rec_err));
+                            return Err(CaptureError::Disconnected);
                         }
                     }
                 }

@@ -92,10 +92,8 @@ impl AmbientCaptureLoop {
 
         let hwp = HwParams::any(&pcm)?;
         hwp.set_access(Access::RWInterleaved)?;
-        // Allow S16, S24, or S32 formats via ALSA plug layer
-        if hwp.set_format(Format::s24()).is_err() && hwp.set_format(Format::s16()).is_err() {
-            hwp.set_format(Format::s32())?;
-        }
+        // Request S32_LE via ALSA plug layer so io_i32() is always supported
+        hwp.set_format(Format::s32())?;
 
         let channels = match hwp.set_channels(2) {
             Ok(_) => 2,
