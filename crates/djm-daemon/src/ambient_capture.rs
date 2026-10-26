@@ -85,8 +85,22 @@ impl AmbientCaptureLoop {
         let pcm = match PCM::new(&self.device_name, alsa::Direction::Capture, false) {
             Ok(p) => p,
             Err(e) => {
-                warn!("Could not open ambient PCM device '{}': {}", self.device_name, e);
-                return Err(AmbientCaptureError::Alsa(e));
+                if self.device_name != "default" {
+                    warn!(
+                        "Could not open ambient PCM device '{}': {}. Falling back to 'default'",
+                        self.device_name, e
+                    );
+                    match PCM::new("default", alsa::Direction::Capture, false) {
+                        Ok(p) => p,
+                        Err(e2) => {
+                            warn!("Could not open fallback ALSA 'default' device: {}", e2);
+                            return Err(AmbientCaptureError::Alsa(e2));
+                        }
+                    }
+                } else {
+                    warn!("Could not open ambient PCM device '{}': {}", self.device_name, e);
+                    return Err(AmbientCaptureError::Alsa(e));
+                }
             }
         };
 
