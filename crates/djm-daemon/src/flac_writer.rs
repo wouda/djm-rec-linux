@@ -16,7 +16,6 @@ pub struct StreamMetadata {
 
 pub struct FlacWriter {
     target_path: PathBuf,
-    part_path: PathBuf,
     encoder: Option<FlacEncoder<'static>>,
     file: Option<File>,
     pub sample_rate: u32,
@@ -42,18 +41,13 @@ impl FlacWriter {
         compression_level: u32,
         sync_interval_secs: u64,
     ) -> Result<Self> {
-        let mut part_path = target_path.to_path_buf();
-        let part_filename = format!(
-            "{}.part",
-            target_path.file_name().unwrap_or_default().to_string_lossy()
-        );
-        part_path.set_file_name(part_filename);
-
-        if let Some(parent) = part_path.parent() {
+        if let Some(parent) = target_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        info!("Creating FLAC part file at: {}", part_path.display());
+        info!("Creating FLAC file directly at: {}", target_path.display());
+
+        let target_buf = target_path.to_path_buf();
 
         let encoder_cfg = FlacEncoder::new()
             .context("Failed to allocate FLAC encoder")?
@@ -63,17 +57,16 @@ impl FlacWriter {
             .compression_level(compression_level);
 
         let encoder = encoder_cfg
-            .init_file(&part_path)
+            .init_file(&target_buf)
             .map_err(|e| anyhow::anyhow!("FLAC init_file error: {:?}", e))?;
 
         let file = OpenOptions::new()
             .read(true)
             .write(true)
-            .open(&part_path)?;
+            .open(&target_buf)?;
 
         Ok(Self {
-            target_path: target_path.to_path_buf(),
-            part_path,
+            target_path: target_buf,
             encoder: Some(encoder),
             file: Some(file),
             sample_rate,
@@ -176,16 +169,16 @@ impl FlacWriter {
         Ok(())
     }
 
-    /// Finalizes the FLAC file cleanly: finishes encoder, computes ReplayGain tags, and renames .part -> .flac
+    /// Finalizes the FLAC file cleanly: finishes encoder, computes ReplayGain tags, and writes metadata
     pub fn finalize(mut self) -> Result<PathBuf> {
-        info!("Finalizing FLAC file: {}", self.part_path.display());
+        info!("Finalizing FLAC file: {}", self.target_path.display());
 
-        // Close encoder cleanly
+        // Close encoder cleanly - this flushes any pending frames and updates STREAMINFO
         if let Some(encoder) = self.encoder.take() {
             let _ = encoder.finish();
         }
 
-        // Close file handle before rename
+        // Close file handle
         drop(self.file.take());
 
         // Calculate ReplayGain metrics
@@ -204,12 +197,7 @@ impl FlacWriter {
             track_gain
         );
 
-        // Atomic rename from .part to target .flac
-        if self.part_path.exists() {
-            std::fs::rename(&self.part_path, &self.target_path)
-                .context("Failed to rename completed .flac.part to .flac")?;
-            info!("Finalized recording saved to: {}", self.target_path.display());
-
+        if self.target_path.exists() {
             if let Some(ref meta) = self.metadata {
                 let status = std::process::Command::new("metaflac")
                     .arg(format!("--set-tag=STREAM_TYPE={}", meta.stream_type))
@@ -222,6 +210,7 @@ impl FlacWriter {
                     warn!("metaflac tag writing skipped or failed: {}", e);
                 }
             }
+            info!("Finalized recording saved to: {}", self.target_path.display());
         }
 
         Ok(self.target_path)

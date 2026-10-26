@@ -45,13 +45,33 @@ impl SessionLog {
         Ok(())
     }
 
+    pub fn log_clip(
+        &mut self,
+        new_clips: u16,
+        peak_l_db: f32,
+        peak_r_db: f32,
+        total_clips: u16,
+    ) -> io::Result<()> {
+        self.log_event(
+            "DIGITAL_CLIP",
+            &format!(
+                "⚠️ Digital clip detected: +{} clipped sample(s) | Peak: L {:.1} dBFS, R {:.1} dBFS | Total session clips: {}",
+                new_clips, peak_l_db, peak_r_db, total_clips
+            ),
+        )
+    }
+
     pub fn log_progress(
         &mut self,
         mb: u64,
         elapsed_secs: u64,
-        peak_db: f32,
+        peak_l_db: f32,
+        peak_r_db: f32,
+        rms_l_db: f32,
+        rms_r_db: f32,
         clips: u16,
         pad_db: i8,
+        free_gb: f32,
     ) -> io::Result<()> {
         let hh = elapsed_secs / 3600;
         let mm = (elapsed_secs % 3600) / 60;
@@ -59,8 +79,8 @@ impl SessionLog {
         self.log_event(
             "STATUS",
             &format!(
-                "Progress update: {} MB written | Elapsed: {:02}:{:02}:{:02} | Current Peak: {:.1} dBFS | Clips: {} | Pad: {} dB",
-                mb, hh, mm, ss, peak_db, clips, pad_db
+                "Progress update: {} MB written | Elapsed: {:02}:{:02}:{:02} | Peak: L {:.1} / R {:.1} dBFS | RMS: L {:.1} / R {:.1} dBFS | Clips: {} | Pad: {} dB | Free Disk: {:.1} GB",
+                mb, hh, mm, ss, peak_l_db, peak_r_db, rms_l_db, rms_r_db, clips, pad_db, free_gb
             ),
         )
     }
@@ -140,14 +160,24 @@ impl SessionLog {
 fn chrono_now_string() -> String {
     let now = std::time::SystemTime::now();
     let duration = now.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    let secs = duration.as_secs();
+    let time_t = duration.as_secs() as nix::libc::time_t;
     let millis = duration.subsec_millis();
 
-    // Standard ISO-like timestamp without external heavy crate
-    let s = secs % 60;
-    let m = (secs / 60) % 60;
-    let h = (secs / 3600) % 24;
-    format!("{:02}:{:02}:{:02}.{:03}", h, m, s, millis)
+    let mut tm: nix::libc::tm = unsafe { std::mem::zeroed() };
+    unsafe {
+        nix::libc::localtime_r(&time_t, &mut tm);
+    }
+
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec,
+        millis
+    )
 }
 
 #[cfg(test)]
@@ -161,11 +191,12 @@ mod tests {
         let mut logger = SessionLog::new(&flac_path).unwrap();
         logger.log_start(&flac_path, "DJM-V10", 96000, -19, true, 5, 2, 450.0).unwrap();
         logger.log_stream_opened("AMBIENT", &tmp_dir.join("ambient.flac"), 48000, 0).unwrap();
-        logger.log_progress(50, 120, -7.9, 0, -19).unwrap();
+        logger.log_progress(50, 120, -7.9, -8.1, -14.2, -14.5, 0, -19, 450.0).unwrap();
+        logger.log_clip(3, -0.1, 0.0, 3).unwrap();
         logger.log_event("BOOKMARK", "Track ID: Bicep - Glue").unwrap();
         logger.log_event("PAD_CHANGE", "Auto-stepped from -15dB to -19dB").unwrap();
         logger.log_stream_finalized("AMBIENT", &tmp_dir.join("ambient.flac"), 5760000).unwrap();
-        logger.log_stop("Manual split", 120, 50, -7.9, 0).unwrap();
+        logger.log_stop("Manual split", 120, 50, -7.9, 3).unwrap();
 
         let log_content = std::fs::read_to_string(logger.path()).unwrap();
         assert!(log_content.contains("[SESSION_START]"));
@@ -173,6 +204,7 @@ mod tests {
         assert!(log_content.contains("[STREAM_OPENED] Stream [AMBIENT]"));
         assert!(log_content.contains("[STREAM_FINALIZED] Stream [AMBIENT]"));
         assert!(log_content.contains("[STATUS]"));
+        assert!(log_content.contains("[DIGITAL_CLIP]"));
         assert!(log_content.contains("[BOOKMARK] Track ID: Bicep - Glue"));
         assert!(log_content.contains("[PAD_CHANGE]"));
         assert!(log_content.contains("[SESSION_STOP]"));

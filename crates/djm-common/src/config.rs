@@ -281,7 +281,7 @@ pub struct AmbientMicConfig {
 }
 
 fn default_ambient_enabled() -> bool {
-    true
+    false
 }
 fn default_ambient_device() -> String {
     "auto".to_string()
@@ -400,7 +400,7 @@ mod tests {
         assert_eq!(loaded.gain_and_hardware.default_capture_level, "-19dB");
         assert!(!loaded.audio.djm_mic.include_in_master);
         assert!(loaded.audio.djm_mic.separate_recording);
-        assert!(loaded.audio.ambient_mic.enabled);
+        assert!(!loaded.audio.ambient_mic.enabled);
         assert_eq!(loaded.audio.ambient_mic.device, "auto");
         assert_eq!(loaded.audio.ambient_mic.post_set_hangover_mins, 15);
     }
@@ -410,7 +410,7 @@ mod tests {
         let default_cfg = AppConfig::default();
         assert!(!default_cfg.audio.djm_mic.include_in_master);
         assert!(default_cfg.audio.djm_mic.separate_recording);
-        assert!(default_cfg.audio.ambient_mic.enabled);
+        assert!(!default_cfg.audio.ambient_mic.enabled);
         assert_eq!(default_cfg.audio.ambient_mic.device, "auto");
         assert_eq!(default_cfg.audio.ambient_mic.post_set_hangover_mins, 15);
         assert_eq!(default_cfg.audio.ambient_mic.sample_rate, 48000);

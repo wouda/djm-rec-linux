@@ -156,13 +156,39 @@ impl AudioEngine {
         let telemetry_period = Duration::from_millis(25); // 40 Hz telemetry emission
         let mut last_status_log_time = Instant::now();
         let mut last_status_log_mb = 0u64;
+        let mut unlogged_clips = 0u16;
+        let mut last_clip_log_time = Instant::now();
+        let mut was_countdown_active = false;
 
         while self.running.load(Ordering::Relaxed) {
             // Dynamic USB Mixer Hotplug / Capture Thread Supervision (when not in mock_mode)
             if !mock_mode {
                 if active_mixer_profile.is_some() && !capture_thread_alive.load(Ordering::Relaxed) {
                     warn!("DJ mixer capture stream ended or USB disconnected.");
-                    push_event(&mut recent_events, "DJ mixer disconnected. Waiting for USB reconnect...".to_string());
+                    push_event(&mut recent_events, "DJ mixer disconnected. Finalizing active recording...".to_string());
+
+                    // Safely close and finalize active recording so no data is corrupted
+                    if let Some(mut log) = active_log.take() {
+                        let dur = file_start_time.elapsed().as_secs();
+                        let total_mb = if let Some(ref w) = active_writer { (w.total_samples() * 6 / (1024 * 1024)) as u64 } else { 0 };
+                        let peak_db = (peak_l_hold.max(peak_r_hold) as f32) / 100.0;
+                        let _ = log.log_stop("Mixer Disconnected (USB Unplugged)", dur, total_mb, peak_db, clip_counter);
+                    }
+                    if let Some(writer) = active_writer.take() {
+                        let p = writer.target_path().to_path_buf();
+                        let _ = writer.finalize();
+                        push_event(
+                            &mut recent_events,
+                            format!("Saved: {}", p.file_name().unwrap_or_default().to_string_lossy()),
+                        );
+                    }
+                    if let Some(amb_w) = ambient_writer.take() {
+                        let _ = amb_w.finalize();
+                    }
+                    segment_index += 1;
+                    preroll.clear();
+                    was_countdown_active = false;
+
                     active_mixer_profile = None;
                     active_card_idx = None;
                     silence_gate.set_state(RecordingState::Disconnected);
@@ -275,11 +301,15 @@ impl AudioEngine {
                     }
                     ControlCommand::ResetPeaks => {
                         clip_counter = 0;
+                        unlogged_clips = 0;
                         peak_l_hold = -9600;
                         peak_r_hold = -9600;
                         live_peak_l = -9600;
                         live_peak_r = -9600;
                         push_event(&mut recent_events, "Reset peak hold & clip counters".to_string());
+                        if let Some(ref mut logger) = active_log {
+                            let _ = logger.log_event("RESET_PEAKS", "Peak meters and clip counters reset by user.");
+                        }
                     }
                     ControlCommand::OpenPairingWindow => {}
                     ControlCommand::ToggleHotspot => {}
@@ -329,16 +359,64 @@ impl AudioEngine {
                 live_peak_r = if peak_r >= live_peak_r { peak_r } else { (live_peak_r - 30).max(peak_r).max(-9600) };
                 live_rms_l = rms_l.max(-9600);
                 live_rms_r = rms_r.max(-9600);
-                clip_counter = clip_counter.saturating_add(clips);
+
+                if clips > 0 {
+                    clip_counter = clip_counter.saturating_add(clips);
+                    unlogged_clips = unlogged_clips.saturating_add(clips);
+
+                    if last_clip_log_time.elapsed() >= Duration::from_millis(500) {
+                        let peak_l_db = peak_l as f32 / 100.0;
+                        let peak_r_db = peak_r as f32 / 100.0;
+                        if let Some(ref mut logger) = active_log {
+                            let _ = logger.log_clip(unlogged_clips, peak_l_db, peak_r_db, clip_counter);
+                        }
+                        push_event(
+                            &mut recent_events,
+                            format!(
+                                "⚠️ Digital clip! (+{} sample(s), peak L {:.1}/R {:.1} dBFS, total: {})",
+                                unlogged_clips, peak_l_db, peak_r_db, clip_counter
+                            ),
+                        );
+                        unlogged_clips = 0;
+                        last_clip_log_time = Instant::now();
+                    }
+                }
 
                 // Process Silence Gate
                 let block_duration = Duration::from_secs_f64(chunk.len() as f64 / sample_rate as f64);
                 let gate_action = silence_gate.process_block(&chunk, block_duration);
+                let is_countdown_now = silence_gate.is_silence_countdown_active();
+
+                if !was_countdown_active && is_countdown_now {
+                    let countdown = silence_gate.silence_countdown_remaining().unwrap_or(self.config.splitting.pause_split_timeout_secs as f32);
+                    if let Some(ref mut logger) = active_log {
+                        let _ = logger.log_event(
+                            "GATE_SILENCE",
+                            &format!(
+                                "Audio level dropped below silence threshold ({:.1} dBFS). Silence auto-split timer started: {:.0}s remaining.",
+                                self.config.splitting.silence_threshold_dbfs,
+                                countdown
+                            ),
+                        );
+                    }
+                    push_event(&mut recent_events, format!("Audio silent (< {:.1} dBFS): auto-split in {:.0}s", self.config.splitting.silence_threshold_dbfs, countdown));
+                    was_countdown_active = true;
+                } else if was_countdown_active && !is_countdown_now && gate_action != GateAction::SilenceTimeoutSplit {
+                    if let Some(ref mut logger) = active_log {
+                        let _ = logger.log_event(
+                            "GATE_RESUME",
+                            "Audio signal resumed above silence threshold. Silence auto-split timer cancelled.",
+                        );
+                    }
+                    push_event(&mut recent_events, "Audio resumed: silence timer cancelled".to_string());
+                    was_countdown_active = false;
+                }
 
                 match gate_action {
                     GateAction::WakeToRecord => {
                         info!("Silence gate woke! Audio detected. Starting recording...");
                         hangover_timer.cancel();
+                        was_countdown_active = false;
                         let mut writer = Self::create_new_flac_segment(
                             &output_dir,
                             &active_mixer_profile,
@@ -348,11 +426,11 @@ impl AudioEngine {
                             self.config.storage.fsync_interval_secs,
                             "",
                         )?;
-                        let start_utc = chrono_date_time_string();
+                        let start_local = local_iso_string();
                         writer.set_metadata(StreamMetadata {
                             stream_type: "MASTER".to_string(),
                             session_id: session_id.clone(),
-                            start_time_utc: start_utc.clone(),
+                            start_time_utc: start_local.clone(),
                             sample_offset: 0,
                         });
 
@@ -383,6 +461,22 @@ impl AudioEngine {
                             free_gb,
                         );
 
+                        let fname = writer
+                            .target_path()
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        let _ = log.log_event(
+                            "GATE_WAKE",
+                            &format!(
+                                "Silence gate woke! Audio detected above wake threshold ({:.1} dBFS). Target file: {}. Pre-roll samples: {}.",
+                                self.config.splitting.wake_threshold_dbfs,
+                                fname,
+                                preroll_audio.len()
+                            ),
+                        );
+
                         // Start ambient stream if available and not yet open
                         if ambient_cons_opt.is_some() && ambient_writer.is_none() {
                             if let Ok(mut amb_w) = Self::create_new_flac_segment(
@@ -397,7 +491,7 @@ impl AudioEngine {
                                 amb_w.set_metadata(StreamMetadata {
                                     stream_type: "AMBIENT".to_string(),
                                     session_id: session_id.clone(),
-                                    start_time_utc: start_utc.clone(),
+                                    start_time_utc: start_local.clone(),
                                     sample_offset: 0,
                                 });
                                 let _ = log.log_stream_opened("AMBIENT", amb_w.target_path(), self.config.audio.ambient_mic.sample_rate, 0);
@@ -405,12 +499,6 @@ impl AudioEngine {
                             }
                         }
 
-                        let fname = writer
-                            .target_path()
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
                         push_event(&mut recent_events, format!("Recording started: {}", fname));
 
                         active_writer = Some(writer);
@@ -419,6 +507,7 @@ impl AudioEngine {
                     }
                     GateAction::SilenceTimeoutSplit => {
                         info!("Silence timeout reached. Closing current recording segment...");
+                        was_countdown_active = false;
                         push_event(&mut recent_events, "Silence timeout reached: segment closed & finalized".to_string());
                         Self::set_system_power_profile_async("balanced");
                         if let Some(mut log) = active_log.take() {
@@ -528,22 +617,35 @@ impl AudioEngine {
                     0
                 };
 
-                // Periodic MB written progress updates to session log (every 60s or every 50 MB, without spamming)
+                // Periodic detailed progress updates to session log (every 30s or every 20 MB)
+                let free_disk_tenths = Self::get_free_disk_space_tenths(&output_dir);
                 if let Some(ref mut logger) = active_log {
                     let now = Instant::now();
                     let current_mb = file_size_mb as u64;
-                    if now.duration_since(last_status_log_time) >= Duration::from_secs(60)
-                        || (current_mb >= last_status_log_mb + 50 && now.duration_since(last_status_log_time) >= Duration::from_secs(15))
+                    if now.duration_since(last_status_log_time) >= Duration::from_secs(30)
+                        || (current_mb >= last_status_log_mb + 20 && now.duration_since(last_status_log_time) >= Duration::from_secs(10))
                     {
                         last_status_log_time = now;
                         last_status_log_mb = current_mb;
                         let dur = file_start_time.elapsed().as_secs();
-                        let peak_db = (peak_l_hold.max(peak_r_hold) as f32) / 100.0;
-                        let _ = logger.log_progress(current_mb, dur, peak_db, clip_counter, headroom_guard.current_pad());
+                        let peak_l_db = live_peak_l as f32 / 100.0;
+                        let peak_r_db = live_peak_r as f32 / 100.0;
+                        let rms_l_db = live_rms_l as f32 / 100.0;
+                        let rms_r_db = live_rms_r as f32 / 100.0;
+                        let free_gb = free_disk_tenths as f32 / 10.0;
+                        let _ = logger.log_progress(
+                            current_mb,
+                            dur,
+                            peak_l_db,
+                            peak_r_db,
+                            rms_l_db,
+                            rms_r_db,
+                            clip_counter,
+                            headroom_guard.current_pad(),
+                            free_gb,
+                        );
                     }
                 }
-
-                let free_disk_tenths = Self::get_free_disk_space_tenths(&output_dir);
 
                 let telemetry = Telemetry {
                     state: silence_gate.state(),
@@ -685,7 +787,7 @@ impl AudioEngine {
             .map(|p| p.name.replace(' ', "_"))
             .unwrap_or_else(|| "DJM".to_string());
 
-        let timestamp = chrono_date_time_string();
+        let timestamp = local_date_time_string();
         let filename = if suffix.is_empty() {
             format!("{}_{}_pt{:02}.flac", mixer_name, timestamp, segment_index)
         } else {
@@ -748,11 +850,11 @@ impl AudioEngine {
             sync_interval_secs,
             "",
         )?;
-        let start_utc = chrono_date_time_string();
+        let start_local = local_iso_string();
         new_writer.set_metadata(StreamMetadata {
             stream_type: "MASTER".to_string(),
             session_id: session_id.to_string(),
-            start_time_utc: start_utc.clone(),
+            start_time_utc: start_local.clone(),
             sample_offset: 0,
         });
 
@@ -769,6 +871,10 @@ impl AudioEngine {
             sync_interval_secs,
             free_gb,
         );
+        let _ = new_log.log_event(
+            "SEGMENT_SPLIT",
+            &format!("Segment pt{:02} opened following split (Reason: {})", segment_index, reason),
+        );
 
         if ambient_rate > 0 {
             if let Ok(mut new_amb) = Self::create_new_flac_segment(
@@ -783,7 +889,7 @@ impl AudioEngine {
                 new_amb.set_metadata(StreamMetadata {
                     stream_type: "AMBIENT".to_string(),
                     session_id: session_id.to_string(),
-                    start_time_utc: start_utc,
+                    start_time_utc: start_local,
                     sample_offset: 0,
                 });
                 let _ = new_log.log_stream_opened("AMBIENT", new_amb.target_path(), ambient_rate, 0);
@@ -813,27 +919,46 @@ impl AudioEngine {
     }
 }
 
-fn chrono_date_time_string() -> String {
+fn local_date_time_string() -> String {
     let now = std::time::SystemTime::now();
     let duration = now.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    let secs = duration.as_secs();
-    let rem_secs = secs % 86400;
-    let h = (rem_secs / 3600) as u32;
-    let m = ((rem_secs % 3600) / 60) as u32;
-    let s = (rem_secs % 60) as u32;
+    let time_t = duration.as_secs() as nix::libc::time_t;
 
-    // Gregorian calendar calculation from unix epoch days
-    let days = (secs / 86400) as i64;
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u32;
-    let yoe = (doe - doe / 1024 + doe / 1461 - doe / 146096) / 365;
-    let y = (yoe as i64) + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let mon = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if mon <= 2 { y + 1 } else { y };
+    let mut tm: nix::libc::tm = unsafe { std::mem::zeroed() };
+    unsafe {
+        nix::libc::localtime_r(&time_t, &mut tm);
+    }
 
-    format!("{:04}-{:02}-{:02}_{:02}-{:02}-{:02}", year, mon, d, h, m, s)
+    format!(
+        "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    )
+}
+
+fn local_iso_string() -> String {
+    let now = std::time::SystemTime::now();
+    let duration = now.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let time_t = duration.as_secs() as nix::libc::time_t;
+    let millis = duration.subsec_millis();
+
+    let mut tm: nix::libc::tm = unsafe { std::mem::zeroed() };
+    unsafe {
+        nix::libc::localtime_r(&time_t, &mut tm);
+    }
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec,
+        millis
+    )
 }
