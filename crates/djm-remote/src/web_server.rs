@@ -151,18 +151,29 @@ async fn handle_websocket_session(socket: WebSocket, state: WebState) {
     }
 }
 
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut res = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        res |= x ^ y;
+    }
+    res == 0
+}
+
 fn is_authorized(expected: &str, query_token: Option<&str>, headers: &HeaderMap) -> bool {
-    let expected = expected.trim();
+    let expected = expected.trim().as_bytes();
     if let Some(tok) = query_token {
-        if tok.trim() == expected {
+        if constant_time_eq(tok.trim().as_bytes(), expected) {
             return true;
         }
     }
     if let Some(auth_header) = headers.get("authorization") {
         if let Ok(s) = auth_header.to_str() {
             if s.starts_with("Bearer ") {
-                let tok = s.trim_start_matches("Bearer ").trim();
-                if tok == expected {
+                let tok = s.trim_start_matches("Bearer ").trim().as_bytes();
+                if constant_time_eq(tok, expected) {
                     return true;
                 }
             }
@@ -220,7 +231,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
   <div class="card header">
     <div>
       <h2 style="font-size: 1.25rem; letter-spacing: -0.5px; display: flex; align-items: center; gap: 8px;">
-        djm-box remote <span style="font-size: 0.75rem; background: #1e2638; border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: #94a3b8;">v0.2.0</span>
+        djm-box remote <span style="font-size: 0.75rem; background: #1e2638; border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: #94a3b8;">v0.2.1</span>
       </h2>
       <div id="mixerModel" class="mixer-info" style="margin-top: 4px;">Connecting to daemon...</div>
     </div>

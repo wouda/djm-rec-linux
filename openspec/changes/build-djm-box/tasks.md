@@ -43,11 +43,11 @@
 
 ## 7. flutter_app: Multi-Transport Companion Mobile Client
 
-- [ ] 7.1 Scaffold Flutter companion mobile application under `flutter_app/` with dependencies (`flutter_blue_plus`, `web_socket_channel`, `shared_preferences`), and verify `flutter pub get` and project analysis.
-- [ ] 7.2 Implement QR Code / 6-digit PIN pairing flow and Smart Multi-Transport Connection Manager in `flutter_app/` that automatically prioritizes Local Wi-Fi WebSocket (`ws://djm-box.local:8080/ws`), Internet/Tailscale WebSocket (`ws(s)://<remote>/ws`), and Offline BLE GATT (`0000d900-...` with automatic `0x00 <auth_token>` handshake), verifying transport failover and telemetry unpacking unit tests.
-- [ ] 7.3 Build high-contrast OLED dark theme UI featuring active transport & connection pill (`Wi-Fi Connected`, `Remote Connected`, or `BLE Connected`), recording status badge (`● RECORDING` / `⏸ ARMED`), mixer info card, and hardware pad selector, verifying widget layout.
-- [ ] 7.4 Build dual smooth stereo VU meters with `-19 dBFS` physical reference line and prominent red clip indicator, verifying meter animations.
-- [ ] 7.5 Build active file info card (timer, size, remaining disk) and authenticated action buttons (`Bookmark Set`, `Split File Now`, `Reset Peaks`) with haptic feedback, verifying user action handling across both WebSocket and BLE transports.
+- [x] 7.1 Scaffold Flutter companion mobile application under `flutter_app/` with dependencies (`flutter_blue_plus`, `web_socket_channel`, `shared_preferences`), and verify `flutter pub get` and project analysis.
+- [x] 7.2 Implement QR Code / 6-digit PIN pairing flow and Smart Multi-Transport Connection Manager in `flutter_app/` that automatically prioritizes Local Wi-Fi WebSocket (`ws://djm-box.local:8080/ws`), Internet/Tailscale WebSocket (`ws(s)://<remote>/ws`), and Offline BLE GATT (`0000d900-...` with automatic `0x00 <auth_token>` handshake), verifying transport failover and telemetry unpacking unit tests.
+- [x] 7.3 Build high-contrast OLED dark theme UI featuring active transport & connection pill (`Wi-Fi Connected`, `Remote Connected`, or `BLE Connected`), recording status badge (`● RECORDING` / `⏸ ARMED`), mixer info card, and hardware pad selector, verifying widget layout.
+- [x] 7.4 Build dual smooth stereo VU meters with `-19 dBFS` physical reference line and prominent red clip indicator, verifying meter animations.
+- [x] 7.5 Build active file info card (timer, size, remaining disk) and authenticated action buttons (`Bookmark Set`, `Split File Now`, `Reset Peaks`) with haptic feedback, verifying user action handling across both WebSocket and BLE transports.
 
 ## 8. CachyOS Systemd, Udev & Appliance Automation
 

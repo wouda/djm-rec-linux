@@ -6,10 +6,11 @@ use bluer::gatt::local::{
 };
 use djm_common::protocol::{ControlCommand, PairingInfo, Telemetry};
 use futures_util::FutureExt;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::{mpsc, watch};
+use std::time::{Duration, Instant};
+use tokio::sync::{mpsc, watch, RwLock};
 use tracing::{info, warn};
 
 pub struct BleGattService {
@@ -55,7 +56,8 @@ impl BleGattService {
         };
 
         let _ = adapter.set_powered(true).await;
-        let _ = adapter.set_pairable(true).await;
+        // Layer 1: Keep BlueZ Pairable = false outside pairing windows to block OS-level pairing
+        let _ = adapter.set_pairable(false).await;
         let _ = adapter.set_discoverable(true).await;
 
         info!("Bluetooth adapter '{}' initialized. Registering GATT service...", adapter.name());
@@ -65,39 +67,43 @@ impl BleGattService {
         let char_meta_uuid: bluer::Uuid = PairingInfo::BLE_CHAR_METADATA.parse()?;
         let char_ctrl_uuid: bluer::Uuid = PairingInfo::BLE_CHAR_CONTROL.parse()?;
 
-        let is_authenticated = Arc::new(AtomicBool::new(false));
+        // Track authenticated devices by Bluetooth MAC address (per-connection session isolation)
+        let authenticated_devices: Arc<RwLock<HashSet<bluer::Address>>> = Arc::new(RwLock::new(HashSet::new()));
+
         let expected_token = self.auth_token.clone();
         let cmd_tx = self.command_tx.clone();
-        let is_auth_for_write = is_authenticated.clone();
+        let auth_for_write = authenticated_devices.clone();
 
         // Control characteristic write handler
-        let write_handler = move |value: Vec<u8>, _req| {
+        let write_handler = move |value: Vec<u8>, req: bluer::gatt::local::CharacteristicWriteRequest| {
             let cmd_tx = cmd_tx.clone();
-            let is_auth = is_auth_for_write.clone();
+            let auth_devs = auth_for_write.clone();
             let expected_token = expected_token.clone();
 
             async move {
+                let dev_addr = req.device_address;
                 match ControlCommand::from_bytes(&value) {
                     Ok(ControlCommand::Auth(ref token)) => {
                         if token.trim() == expected_token.trim() {
-                            is_auth.store(true, Ordering::Relaxed);
-                            info!("BLE client successfully authenticated with auth token!");
+                            auth_devs.write().await.insert(dev_addr);
+                            info!("BLE client {:?} successfully authenticated with auth token!", dev_addr);
                             Ok(())
                         } else {
-                            warn!("BLE client failed authentication with invalid token");
+                            auth_devs.write().await.remove(&dev_addr);
+                            warn!("BLE client {:?} failed authentication with invalid token", dev_addr);
                             Err(ReqError::NotAuthorized)
                         }
                     }
                     Ok(cmd) => {
-                        if !is_auth.load(Ordering::Relaxed) {
-                            warn!("Rejected unauthenticated BLE write command");
+                        if !auth_devs.read().await.contains(&dev_addr) {
+                            warn!("Rejected unauthenticated BLE write command from {:?}", dev_addr);
                             return Err(ReqError::NotAuthorized);
                         }
                         let _ = cmd_tx.send(cmd).await;
                         Ok(())
                     }
                     Err(e) => {
-                        warn!("Invalid BLE command packet: {:?}", e);
+                        warn!("Invalid BLE command packet from {:?}: {:?}", dev_addr, e);
                         Err(ReqError::Failed)
                     }
                 }
@@ -106,22 +112,22 @@ impl BleGattService {
         };
 
         let tel_rx_for_notify = self.telemetry_rx.clone();
-        let is_auth_for_notify = is_authenticated.clone();
+        let auth_for_notify = authenticated_devices.clone();
 
         // Telemetry characteristic notify handler
         let notify_handler = move |mut notifier: CharacteristicNotifier| {
             let mut tel_rx = tel_rx_for_notify.clone();
-            let is_auth = is_auth_for_notify.clone();
+            let auth_devs = auth_for_notify.clone();
 
             async move {
-                // 45-second security watchdog for BLE client authentication
-                let start = tokio::time::Instant::now();
-                let auth_timeout = Duration::from_secs(45);
+                let start = Instant::now();
+                let auth_timeout = Duration::from_secs(3);
 
                 while !notifier.is_stopped() {
-                    if !is_auth.load(Ordering::Relaxed) {
+                    // Check if at least one authenticated device session exists
+                    if auth_devs.read().await.is_empty() {
                         if start.elapsed() >= auth_timeout {
-                            warn!("BLE 45s auth watchdog expired without token! Evicting unauthenticated scanner.");
+                            warn!("BLE 3.0s auth watchdog expired without token! Terminating unauthenticated notification stream.");
                             break;
                         }
                         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -142,15 +148,17 @@ impl BleGattService {
         };
 
         let tel_rx_for_meta = self.telemetry_rx.clone();
-        let is_auth_for_meta = is_authenticated.clone();
+        let auth_for_meta = authenticated_devices.clone();
 
         // Metadata characteristic read handler
-        let read_meta_handler = move |_req| {
+        let read_meta_handler = move |req: bluer::gatt::local::CharacteristicReadRequest| {
             let tel_rx = tel_rx_for_meta.clone();
-            let is_auth = is_auth_for_meta.clone();
+            let auth_devs = auth_for_meta.clone();
 
             async move {
-                if !is_auth.load(Ordering::Relaxed) {
+                let dev_addr = req.device_address;
+                if !auth_devs.read().await.contains(&dev_addr) {
+                    warn!("Rejected unauthenticated BLE metadata read from {:?}", dev_addr);
                     return Err(ReqError::NotAuthorized);
                 }
                 let t = tel_rx.borrow().clone();
@@ -224,6 +232,50 @@ impl BleGattService {
 
         info!("BLE GATT Peripheral active as '{}' (UUID: {})", self.device_name, service_uuid);
 
+        // Layer 2 Background Watchdog: forcibly disconnect any device that does not authenticate within 3.0 seconds
+        let adapter_watchdog = adapter.clone();
+        let auth_devs_watchdog = authenticated_devices.clone();
+        let running_watchdog = self.running.clone();
+
+        tokio::spawn(async move {
+            let mut connection_start: HashMap<bluer::Address, Instant> = HashMap::new();
+
+            while running_watchdog.load(Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+
+                let addresses = match adapter_watchdog.device_addresses().await {
+                    Ok(addrs) => addrs,
+                    Err(_) => continue,
+                };
+
+                for addr in addresses {
+                    if let Ok(device) = adapter_watchdog.device(addr) {
+                        let is_connected = device.is_connected().await.unwrap_or(false);
+                        if is_connected {
+                            let is_authed = auth_devs_watchdog.read().await.contains(&addr);
+                            if is_authed {
+                                connection_start.remove(&addr);
+                            } else {
+                                let seen_at = connection_start.entry(addr).or_insert_with(Instant::now);
+                                if seen_at.elapsed() >= Duration::from_secs(3) {
+                                    warn!(
+                                        "BLE 3.0s watchdog expired for unauthenticated device {:?}! Forcibly disconnecting via BlueZ D-Bus.",
+                                        addr
+                                    );
+                                    let _ = device.disconnect().await;
+                                    connection_start.remove(&addr);
+                                }
+                            }
+                        } else {
+                            // Device disconnected: clean up tracking and authentication session
+                            connection_start.remove(&addr);
+                            auth_devs_watchdog.write().await.remove(&addr);
+                        }
+                    }
+                }
+            }
+        });
+
         while self.running.load(Ordering::Relaxed) {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -247,5 +299,26 @@ mod tests {
         } else {
             panic!("Expected auth command");
         }
+    }
+
+    #[tokio::test]
+    async fn test_per_device_session_isolation() {
+        let auth_devs: Arc<RwLock<HashSet<bluer::Address>>> = Arc::new(RwLock::new(HashSet::new()));
+        let dev1: bluer::Address = [0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33].into();
+        let dev2: bluer::Address = [0xAA, 0xBB, 0xCC, 0x44, 0x55, 0x66].into();
+
+        // Initially neither is authenticated
+        assert!(!auth_devs.read().await.contains(&dev1));
+        assert!(!auth_devs.read().await.contains(&dev2));
+
+        // Authenticate dev1
+        auth_devs.write().await.insert(dev1);
+        assert!(auth_devs.read().await.contains(&dev1));
+        // Verify dev2 is NOT authenticated (no global auth leak)
+        assert!(!auth_devs.read().await.contains(&dev2));
+
+        // When dev1 disconnects, its session is evicted
+        auth_devs.write().await.remove(&dev1);
+        assert!(!auth_devs.read().await.contains(&dev1));
     }
 }

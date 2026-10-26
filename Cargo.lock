@@ -541,7 +541,7 @@ dependencies = [
 
 [[package]]
 name = "djm-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -554,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "djm-common"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "byteorder",
  "rand",
@@ -567,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "djm-daemon"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "alsa",
  "anyhow",
@@ -586,7 +586,7 @@ dependencies = [
 
 [[package]]
 name = "djm-remote"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "djm-tui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "crossterm",

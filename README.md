@@ -81,8 +81,9 @@ Designed for Linux (CachyOS / Arch Linux), `djm-rec-linux` transforms a laptop, 
 
 Download the latest pre-compiled bundle from the **[GitHub Releases](https://github.com/wouda/djm-rec-linux/releases/latest)** page:
 
-- **Linux x86_64** (Laptops, Mini PCs, Desktops): [djm-rec-linux-v0.2.0-x86_64.tar.gz](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-rec-linux-v0.2.0-x86_64.tar.gz)
-- **Linux aarch64** (Raspberry Pi 4 / 5): [djm-rec-linux-v0.2.0-aarch64.tar.gz](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-rec-linux-v0.2.0-aarch64.tar.gz)
+- **Linux x86_64** (Laptops, Mini PCs, Desktops): [djm-rec-linux-v0.2.1-x86_64.tar.gz](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-rec-linux-v0.2.1-x86_64.tar.gz)
+- **Linux aarch64** (Raspberry Pi 4 / 5): [djm-rec-linux-v0.2.1-aarch64.tar.gz](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-rec-linux-v0.2.1-aarch64.tar.gz)
+- **Android Companion App**: [djm-box-companion-v0.2.1.apk](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-box-companion-v0.2.1.apk)
 
 ```bash
 # Extract and run setup
@@ -121,7 +122,7 @@ systemctl --user enable --now djm-box-daemon djm-box-remote
 djm-box status
 ```
 ```text
-=== djm-box v0.2.0 Appliance Status ===
+=== djm-box v0.2.1 Appliance Status ===
 Mixer Detection:  ✓ DETECTED (Pioneer DJM-900NXS2 @ 96000 Hz)
 Recording Status: ● ACTIVELY RECORDING TO DISK (File: Pioneer_DJM-900NXS2_2026-10-25_17-30-00_pt01.flac)
 Mic Routing:      REC OUT (Master + Mic captured via ALSA unmuted routing)
