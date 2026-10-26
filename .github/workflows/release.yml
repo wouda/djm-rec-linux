@@ -36,7 +36,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libdbus-1-dev libflac-dev pkg-config
+          sudo apt-get install -y libasound2-dev libflac-dev pkg-config
 
       - name: Symlink libflac.so for flac-sys
         run: |
@@ -52,7 +52,7 @@ jobs:
 
       - name: Package artifacts
         run: |
-          TAG_NAME="${GITHUB_REF_NAME:-v0.2.0}"
+          TAG_NAME="${GITHUB_REF_NAME:-v0.2.2}"
           PKG_DIR="djm-rec-linux-${TAG_NAME}-${{ matrix.arch }}"
           mkdir -p "$PKG_DIR/bin"
           
@@ -107,7 +107,7 @@ jobs:
         working-directory: flutter_app
         run: |
           flutter build apk --release
-          TAG_NAME="${GITHUB_REF_NAME:-v0.2.1}"
+          TAG_NAME="${GITHUB_REF_NAME:-v0.2.2}"
           APK_NAME="djm-box-companion-${TAG_NAME}.apk"
           APK_PATH=$(find build -name "*.apk" -type f | head -n 1)
           if [ -z "$APK_PATH" ]; then

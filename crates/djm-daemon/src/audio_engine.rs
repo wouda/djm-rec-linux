@@ -201,6 +201,7 @@ impl AudioEngine {
                         peak_r_hold = -9600;
                     }
                     ControlCommand::OpenPairingWindow => {}
+                    ControlCommand::ToggleHotspot => {}
                 }
             }
 

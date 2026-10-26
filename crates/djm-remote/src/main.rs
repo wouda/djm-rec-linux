@@ -1,8 +1,8 @@
 use anyhow::Result;
 use djm_common::config::AppConfig;
 use djm_common::protocol::default_socket_path;
-use djm_remote::ble_gatt::BleGattService;
 use djm_remote::daemon_client::DaemonClient;
+use djm_remote::hotspot::HotspotWatchdog;
 use djm_remote::web_server::WebServer;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -39,21 +39,16 @@ async fn main() -> Result<()> {
         client.run().await;
     });
 
-    // Start BLE GATT Peripheral service if enabled
-    if config.remote.ble_enabled {
-        let ble = BleGattService::new(
-            config.remote.ble_device_name.clone(),
-            config.remote.auth_token.clone(),
-            telemetry_rx.clone(),
-            command_tx.clone(),
-            running.clone(),
-        );
-        tokio::spawn(async move {
-            if let Err(e) = ble.run().await {
-                info!("BLE service stopped: {}", e);
-            }
-        });
-    }
+    // Start Hotspot Watchdog service (auto-fallback if offline)
+    let hotspot = HotspotWatchdog::new(
+        config.remote.hotspot_mode.clone(),
+        config.remote.hotspot_ssid.clone(),
+        config.remote.hotspot_password.clone(),
+        running.clone(),
+    );
+    tokio::spawn(async move {
+        hotspot.run().await;
+    });
 
     // Start Web Server / WebSocket bridge if enabled
     if config.remote.web_enabled {

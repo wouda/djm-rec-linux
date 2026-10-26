@@ -167,10 +167,12 @@ impl Default for GainAndHardwareConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RemoteConfig {
-    #[serde(default = "default_ble_enabled")]
-    pub ble_enabled: bool,
-    #[serde(default = "default_ble_device_name")]
-    pub ble_device_name: String,
+    #[serde(default = "default_hotspot_mode")]
+    pub hotspot_mode: String,
+    #[serde(default = "default_hotspot_ssid")]
+    pub hotspot_ssid: String,
+    #[serde(default = "default_hotspot_password")]
+    pub hotspot_password: String,
     #[serde(default = "default_web_enabled")]
     pub web_enabled: bool,
     #[serde(default = "default_web_bind_addr")]
@@ -181,11 +183,14 @@ pub struct RemoteConfig {
     pub remote_public_url: String,
 }
 
-fn default_ble_enabled() -> bool {
-    true
+fn default_hotspot_mode() -> String {
+    "auto".to_string()
 }
-fn default_ble_device_name() -> String {
-    "DJM-Box-Recorder".to_string()
+fn default_hotspot_ssid() -> String {
+    "DJM-Box-Booth".to_string()
+}
+fn default_hotspot_password() -> String {
+    "djm-box-123".to_string()
 }
 fn default_web_enabled() -> bool {
     true
@@ -200,6 +205,17 @@ pub fn generate_random_token() -> String {
     let num: u32 = rng.gen_range(100_000..=999_999);
     format!("{:06}", num)
 }
+pub fn generate_random_wpa2_password() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    const CHARSET: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
+    (0..8)
+        .map(|_| {
+            let idx = rng.gen_range(0..CHARSET.len());
+            CHARSET[idx] as char
+        })
+        .collect()
+}
 fn default_auth_token() -> String {
     "123456".to_string()
 }
@@ -207,8 +223,9 @@ fn default_auth_token() -> String {
 impl Default for RemoteConfig {
     fn default() -> Self {
         Self {
-            ble_enabled: default_ble_enabled(),
-            ble_device_name: default_ble_device_name(),
+            hotspot_mode: default_hotspot_mode(),
+            hotspot_ssid: default_hotspot_ssid(),
+            hotspot_password: default_hotspot_password(),
             web_enabled: default_web_enabled(),
             web_bind_addr: default_web_bind_addr(),
             auth_token: default_auth_token(),
@@ -308,6 +325,7 @@ impl AppConfig {
         } else {
             let mut config = AppConfig::default();
             config.remote.auth_token = generate_random_token();
+            config.remote.hotspot_password = generate_random_wpa2_password();
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -340,6 +358,18 @@ mod tests {
         assert_eq!(cfg.gain_and_hardware.default_capture_level, "-19dB");
         assert!(cfg.gain_and_hardware.auto_headroom_guard);
         assert_eq!(cfg.storage.fsync_interval_secs, 2);
+        assert_eq!(cfg.remote.hotspot_mode, "auto");
+        assert_eq!(cfg.remote.hotspot_ssid, "DJM-Box-Booth");
+        assert!(!cfg.remote.hotspot_password.is_empty());
+    }
+
+    #[test]
+    fn test_wpa2_password_generation() {
+        let p1 = generate_random_wpa2_password();
+        let p2 = generate_random_wpa2_password();
+        assert_eq!(p1.len(), 8);
+        assert_eq!(p2.len(), 8);
+        assert_ne!(p1, p2);
     }
 
     #[test]

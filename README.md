@@ -28,8 +28,8 @@ Designed for Linux (CachyOS / Arch Linux), `djm-rec-linux` transforms a laptop, 
 - **Fault-Isolated Multi-Process Architecture**: Audio capture (`djm-daemon`), terminal UI (`djm-tui`), and remote bridges (`djm-remote`) run in completely separate OS processes communicating over a non-blocking Unix Domain Socket. A crash or lag in the UI or network never drops a single audio frame.
 - **Multi-Transport Remote Monitoring**:
   - **Local Web Dashboard (`http://<ip>:8080`)**: Clean dark-mode UI with dual stereo VU meters, file stats, and remote actions (Split, Bookmark, Lock -19dB).
-  - **Web Bluetooth (BLE GATT)**: Offline monitoring using 20-byte packed binary telemetry at 15–20 Hz when Wi-Fi is unavailable in the booth.
-  - **QR Code & 6-Digit PIN Pairing**: Authenticates remote clients securely.
+  - **Direct Local Wi-Fi Hotspot (`10.42.0.1`)**: Automatically starts a local NetworkManager Wi-Fi hotspot (`DJM-Box-Booth`) when no venue Wi-Fi/LAN is connected, giving phones full 60 FPS WebSocket telemetry directly in offline club booths.
+  - **Two-Step QR Code & 6-Digit PIN Pairing**: Scan Step 1 with a phone camera to join the hotspot, and scan Step 2 to open the dashboard or companion app instantly.
 
 ---
 
@@ -62,14 +62,15 @@ Designed for Linux (CachyOS / Arch Linux), `djm-rec-linux` transforms a laptop, 
 +---------------------------------------+         +---------------------------------------+
 | djm-tui (Terminal Dashboard)          |         | djm-remote (djm-box-remote.service)   |
 | - Header with Mixer & Record status   |         | - Web Remote HTTP & WebSocket (:8080) |
-| - High-precision Stereo VU Meters     |         | - BLE GATT Peripheral (20-byte stream)|
-| - Hotkeys: Bookmark, Split, Pad, QR   |         | - PIN Authentication Watchdog         |
+| - High-precision Stereo VU Meters     |         | - Auto Local Wi-Fi Hotspot (10.42.0.1)|
+| - Hotkeys: Bookmark, Split, Pad, QR, H|         | - PIN Authentication Watchdog         |
 +---------------------------------------+         +-------------------+-------------------+
                                                                       |
                                                                       v
                                                   +---------------------------------------+
-                                                  | Phone Browser / Web Bluetooth         |
-                                                  | http://djm-box.local:8080             |
+                                                  | Phone Browser / Companion App         |
+                                                  | Direct Hotspot: http://10.42.0.1:8080 |
+                                                  | Local LAN / mDNS: djm-box.local:8080  |
                                                   +---------------------------------------+
 ```
 
@@ -81,9 +82,9 @@ Designed for Linux (CachyOS / Arch Linux), `djm-rec-linux` transforms a laptop, 
 
 Download the latest pre-compiled bundle from the **[GitHub Releases](https://github.com/wouda/djm-rec-linux/releases/latest)** page:
 
-- **Linux x86_64** (Laptops, Mini PCs, Desktops): [djm-rec-linux-v0.2.1-x86_64.tar.gz](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-rec-linux-v0.2.1-x86_64.tar.gz)
-- **Linux aarch64** (Raspberry Pi 4 / 5): [djm-rec-linux-v0.2.1-aarch64.tar.gz](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-rec-linux-v0.2.1-aarch64.tar.gz)
-- **Android Companion App**: [djm-box-companion-v0.2.1.apk](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-box-companion-v0.2.1.apk)
+- **Linux x86_64** (Laptops, Mini PCs, Desktops): [djm-rec-linux-v0.2.2-x86_64.tar.gz](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-rec-linux-v0.2.2-x86_64.tar.gz)
+- **Linux aarch64** (Raspberry Pi 4 / 5): [djm-rec-linux-v0.2.2-aarch64.tar.gz](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-rec-linux-v0.2.2-aarch64.tar.gz)
+- **Android Companion App**: [djm-box-companion-v0.2.2.apk](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-box-companion-v0.2.2.apk)
 
 ```bash
 # Extract and run setup
@@ -103,7 +104,7 @@ cargo build --release
 ```
 
 ### 3. Run Appliance Setup
-The `setup` command automatically installs system dependencies (`alsa-lib`, `flac`, `pipewire`, `bluez`, `avahi`), installs binaries to `~/.cargo/bin/`, sets up systemd user services, configures WirePlumber pro-audio rules, and ensures lid-close sleep is disabled:
+The `setup` command automatically installs system dependencies (`alsa-lib`, `flac`, `pipewire`, `networkmanager`, `avahi`), installs binaries to `~/.cargo/bin/`, sets up systemd user services, configures WirePlumber pro-audio rules, and ensures lid-close sleep is disabled:
 ```bash
 ./target/release/djm-box setup
 ```
@@ -122,7 +123,7 @@ systemctl --user enable --now djm-box-daemon djm-box-remote
 djm-box status
 ```
 ```text
-=== djm-box v0.2.1 Appliance Status ===
+=== djm-box v0.2.2 Appliance Status ===
 Mixer Detection:  ✓ DETECTED (Pioneer DJM-900NXS2 @ 96000 Hz)
 Recording Status: ● ACTIVELY RECORDING TO DISK (File: Pioneer_DJM-900NXS2_2026-10-25_17-30-00_pt01.flac)
 Mic Routing:      REC OUT (Master + Mic captured via ALSA unmuted routing)
@@ -151,15 +152,27 @@ djm-box monitor
 ```bash
 djm-box tui
 ```
-* **[P]**: Display QR code for phone pairing
+* **[P]**: Open phone pairing modal (press **[Tab]** or **[W]** to toggle between Wi-Fi Hotspot QR and Web Dashboard QR)
+* **[H]**: Toggle local NetworkManager Wi-Fi Hotspot on/off on demand
 * **[S]**: Split current recording segment immediately
 * **[M]**: Drop a timestamped bookmark in the session log
 * **[ [ / ] ]**: Step hardware pad attenuation up/down
 * **[A]**: Toggle Auto-Guard headroom protection
 * **[R]**: Reset digital peak hold
 
-### Remote Booth Web App
-Open `http://<ip-of-appliance>:8080` in any phone browser. Enter your 6-digit PIN (shown via `djm-box pair` or in `~/.config/djm-box/config.toml`).
+### Manage Local Wi-Fi Hotspot
+```bash
+djm-box hotspot status   # View current hotspot state, SSID, and WPA2 password
+djm-box hotspot on       # Manually start the dedicated booth Wi-Fi hotspot
+djm-box hotspot off      # Manually stop the local Wi-Fi hotspot
+```
+
+### Phone Pairing & Remote Booth Web App
+Run `djm-box pair` to display the direct URL, hotspot gateway URL (`http://10.42.0.1:8080/?token=<PIN>`), and WPA2 credentials:
+```bash
+djm-box pair
+```
+Open `http://<ip-of-appliance>:8080` (or `http://10.42.0.1:8080` when on the hotspot) in any phone browser, or connect via the Android Companion App. Enter your 6-digit PIN.
 
 ---
 

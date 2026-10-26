@@ -231,7 +231,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
   <div class="card header">
     <div>
       <h2 style="font-size: 1.25rem; letter-spacing: -0.5px; display: flex; align-items: center; gap: 8px;">
-        djm-box remote <span style="font-size: 0.75rem; background: #1e2638; border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: #94a3b8;">v0.2.1</span>
+        djm-box remote <span style="font-size: 0.75rem; background: #1e2638; border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: #94a3b8;">v0.2.2</span>
       </h2>
       <div id="mixerModel" class="mixer-info" style="margin-top: 4px;">Connecting to daemon...</div>
     </div>
@@ -284,9 +284,6 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
       <button onclick="sendCmd({SetHardwarePad: -19})">🛡️ Lock -19dB</button>
       <button onclick="sendCmd('ResetPeaks')">🔄 Reset Peaks</button>
     </div>
-    <div style="margin-top: 10px;">
-      <button id="btnBle" style="width: 100%; background: #2563eb;" onclick="connectBLE()">📶 Connect via Bluetooth (Web BLE)</button>
-    </div>
   </div>
 
 <script>
@@ -308,71 +305,6 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
     ws.onclose = () => { setTimeout(connectWS, 1500); };
   }
   connectWS();
-
-  let bleCtrlChar = null;
-  async function connectBLE() {
-    if (!navigator.bluetooth) {
-      alert('Web Bluetooth is not supported in this browser. Please use Chrome on Android/Mac/PC, Bluefy on iOS, or an app like nRF Connect / LightBlue.');
-      return;
-    }
-    try {
-      document.getElementById('btnBle').textContent = 'Connecting BLE...';
-      const device = await navigator.bluetooth.requestDevice({
-        filters: [{ name: 'DJM-Box-Recorder' }],
-        optionalServices: ['0000d900-0000-1000-8000-00805f9b34fb']
-      });
-      const server = await device.gatt.connect();
-      const service = await server.getPrimaryService('0000d900-0000-1000-8000-00805f9b34fb');
-
-      // Send 0x00 Auth Command with Token
-      bleCtrlChar = await service.getCharacteristic('0000d903-0000-1000-8000-00805f9b34fb');
-      const encoder = new TextEncoder();
-      const tokenBytes = encoder.encode(token);
-      const authPayload = new Uint8Array(1 + tokenBytes.length);
-      authPayload[0] = 0x00;
-      authPayload.set(tokenBytes, 1);
-      await bleCtrlChar.writeValueWithResponse(authPayload);
-
-      // Subscribe to 20-byte Telemetry
-      const telChar = await service.getCharacteristic('0000d901-0000-1000-8000-00805f9b34fb');
-      await telChar.startNotifications();
-      telChar.addEventListener('characteristicvaluechanged', (e) => {
-        const dv = e.target.value;
-        if (dv.byteLength >= 20) {
-          const stateCode = dv.getUint8(0);
-          const stateNames = ['Disconnected', 'ArmedSilent', 'Recording', 'Paused'];
-          const st = stateNames[stateCode] || 'Recording';
-          const pad = dv.getInt8(1);
-          const peakL = dv.getInt16(2, true);
-          const peakR = dv.getInt16(4, true);
-          const rmsL = dv.getInt16(6, true);
-          const rmsR = dv.getInt16(8, true);
-          const clips = dv.getUint16(10, true);
-          const dur = dv.getUint32(12, true);
-          const sizeMb = dv.getUint16(16, true);
-          const disk = dv.getUint16(18, true);
-          updateUI({
-            state: st,
-            mixer_model: st !== 'Disconnected' ? 'Pioneer DJM Mixer' : '',
-            hw_pad_db: pad,
-            peak_l_centi_db: peakL,
-            peak_r_centi_db: peakR,
-            rms_l_centi_db: rmsL,
-            rms_r_centi_db: rmsR,
-            clip_count: clips,
-            active_file_duration_secs: dur,
-            active_file_size_mb: sizeMb,
-            free_disk_gb_tenths: disk,
-          });
-        }
-      });
-      document.getElementById('btnBle').textContent = '✅ Bluetooth (BLE) Active';
-      document.getElementById('btnBle').style.background = '#16a34a';
-    } catch (err) {
-      document.getElementById('btnBle').textContent = '📶 Connect via Bluetooth (Web BLE)';
-      alert('Bluetooth connection failed: ' + err.message);
-    }
-  }
 
   function sendCmd(cmd) {
     if (ws && ws.readyState === WebSocket.OPEN) {

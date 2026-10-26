@@ -41,7 +41,7 @@ class DashboardScreen extends StatelessWidget {
                 border: Border.all(color: const Color(0xFF232A3B)),
               ),
               child: const Text(
-                "v0.2.1",
+                "v0.2.2",
                 style: TextStyle(
                   color: Color(0xFF94A3B8),
                   fontSize: 10,
@@ -284,11 +284,6 @@ class DashboardScreen extends StatelessWidget {
         bg = const Color(0xFF0284C7);
         fg = Colors.white;
         label = "Remote";
-        break;
-      case ActiveTransport.ble:
-        bg = const Color(0xFF2563EB);
-        fg = Colors.white;
-        label = "BLE";
         break;
       case ActiveTransport.connecting:
         bg = const Color(0xFFCA8A04);

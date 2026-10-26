@@ -11,6 +11,7 @@ pub fn draw_ui(
     telemetry: &Telemetry,
     pairing_info: &PairingInfo,
     show_pairing: bool,
+    show_wifi_qr: bool,
     status_msg: Option<&str>,
 ) {
     let size = f.area();
@@ -26,18 +27,18 @@ pub fn draw_ui(
         ])
         .split(size);
 
-    draw_header(f, chunks[0], telemetry);
+    draw_header(f, chunks[0], telemetry, pairing_info);
     draw_meters(f, chunks[1], telemetry);
     draw_file_stats(f, chunks[2], telemetry);
     draw_status_logs(f, chunks[3], telemetry, status_msg);
     draw_footer(f, chunks[4]);
 
     if show_pairing {
-        draw_pairing_modal(f, size, pairing_info);
+        draw_pairing_modal(f, size, pairing_info, show_wifi_qr);
     }
 }
 
-fn draw_header(f: &mut Frame, area: Rect, t: &Telemetry) {
+fn draw_header(f: &mut Frame, area: Rect, t: &Telemetry, p: &PairingInfo) {
     let (rec_badge, rec_style) = match t.state {
         RecordingState::Recording => (
             " ● RECORDING TO DISK ",
@@ -72,6 +73,13 @@ fn draw_header(f: &mut Frame, area: Rect, t: &Telemetry) {
     let guard_str = if t.auto_guard_active { "Auto-Guard: [ON]" } else { "Auto-Guard: [OFF]" };
     let guard_color = if t.auto_guard_active { Color::Green } else { Color::DarkGray };
 
+    let hotspot_str = if p.hotspot_active {
+        format!("Hotspot: [ON: {}]", p.hotspot_ssid)
+    } else {
+        "Hotspot: [OFF]".to_string()
+    };
+    let hotspot_color = if p.hotspot_active { Color::Green } else { Color::DarkGray };
+
     let line1 = Line::from(vec![
         Span::styled(mixer_badge, mixer_style),
         Span::raw("  "),
@@ -82,7 +90,8 @@ fn draw_header(f: &mut Frame, area: Rect, t: &Telemetry) {
         Span::styled(format!("Pad: [{} dB]  ", t.hw_pad_db), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         Span::styled("Mic Routing: [REC OUT (+Mic)]  ", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
         Span::styled(format!("{}  ", guard_str), Style::default().fg(guard_color)),
-        Span::styled(format!("Appliance v{}", djm_common::VERSION), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{}  ", hotspot_str), Style::default().fg(hotspot_color)),
+        Span::styled(format!("v{}", djm_common::VERSION), Style::default().fg(Color::DarkGray)),
     ]);
 
     let title = format!(" djm-box v{} DJ Recording Appliance ", djm_common::VERSION);
@@ -229,26 +238,28 @@ fn draw_footer(f: &mut Frame, area: Rect) {
     let hotkeys = Line::from(vec![
         Span::styled("[P]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         Span::raw(" Pair Phone  "),
+        Span::styled("[H]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::raw(" Hotspot  "),
         Span::styled("[S]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         Span::raw(" Split File  "),
         Span::styled("[M]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         Span::raw(" Bookmark  "),
         Span::styled("[[] / []]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::raw(" Adjust Pad  "),
+        Span::raw(" Pad  "),
         Span::styled("[A]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         Span::raw(" Auto-Guard  "),
         Span::styled("[R]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::raw(" Reset Peaks  "),
+        Span::raw(" Reset  "),
         Span::styled("[Q]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-        Span::raw(" Exit TUI"),
+        Span::raw(" Exit"),
     ]);
 
     f.render_widget(Paragraph::new(hotkeys).alignment(Alignment::Center), area);
 }
 
-fn draw_pairing_modal(f: &mut Frame, size: Rect, info: &PairingInfo) {
-    let modal_width = 58.min(size.width.saturating_sub(4));
-    let modal_height = 29.min(size.height.saturating_sub(2));
+fn draw_pairing_modal(f: &mut Frame, size: Rect, info: &PairingInfo, show_wifi_qr: bool) {
+    let modal_width = 62.min(size.width.saturating_sub(4));
+    let modal_height = 31.min(size.height.saturating_sub(2));
 
     let area = Rect {
         x: (size.width.saturating_sub(modal_width)) / 2,
@@ -259,31 +270,45 @@ fn draw_pairing_modal(f: &mut Frame, size: Rect, info: &PairingInfo) {
 
     f.render_widget(Clear, area);
 
+    let (step_title, prompt, qr_content) = if show_wifi_qr {
+        (
+            " Step 1/2: Join Laptop Wi-Fi Hotspot ",
+            "Point Phone Camera at QR to Join Wi-Fi Hotspot",
+            info.to_wifi_qr_payload(),
+        )
+    } else {
+        (
+            " Step 2/2: Open Dashboard & Companion App ",
+            "Point Phone Camera at QR to Open Dashboard in Browser",
+            info.to_web_url(),
+        )
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Phone Pairing & Remote Booth Dashboard ")
+        .title(step_title)
         .style(Style::default().fg(Color::Yellow).bg(Color::Black));
 
-    let web_url = info.to_web_url();
-    let qr_str = render_qr_to_terminal_string(&web_url).unwrap_or_else(|_| "QR Error".to_string());
+    let qr_str = render_qr_to_terminal_string(&qr_content).unwrap_or_else(|_| "QR Error".to_string());
 
     let mut lines = Vec::new();
-    lines.push(Line::from(Span::styled("Point Phone Camera at QR to Open Dashboard", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))));
+    lines.push(Line::from(Span::styled(prompt, Style::default().fg(Color::White).add_modifier(Modifier::BOLD))));
+    
+    // Wi-Fi details line
+    let hs_status = if info.hotspot_active { "ACTIVE" } else { "OFF" };
     lines.push(Line::from(vec![
-        Span::styled("Direct Wi-Fi:  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&web_url, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled("Hotspot: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(&info.hotspot_ssid, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" [{}]  | Pass: ", hs_status), Style::default().fg(Color::DarkGray)),
+        Span::styled(&info.hotspot_password, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
     ]));
-    if let Some(ref mdns) = info.mdns_hostname {
-        lines.push(Line::from(vec![
-            Span::styled("mDNS Hostname: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("http://{}:{}/?token={}", mdns, info.port, info.token), Style::default().fg(Color::Magenta)),
-        ]));
-    }
+
+    // Web endpoint line
     lines.push(Line::from(vec![
-        Span::styled("Auth PIN: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&info.token, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Span::styled("  |  BLE: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&info.name, Style::default().fg(Color::Yellow)),
+        Span::styled("Web URL: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(info.to_web_url(), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::styled("  | PIN: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(&info.token, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
     ]));
     lines.push(Line::from(""));
 
@@ -292,7 +317,12 @@ fn draw_pairing_modal(f: &mut Frame, size: Rect, info: &PairingInfo) {
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Press [Esc] or [P] to close modal", Style::default().fg(Color::DarkGray))));
+    let toggle_hint = if show_wifi_qr {
+        "Press [Tab] or [W] to switch to -> Step 2: Dashboard URL QR | [Esc]/[P] to close"
+    } else {
+        "Press [Tab] or [W] to switch to -> Step 1: Join Wi-Fi QR | [Esc]/[P] to close"
+    };
+    lines.push(Line::from(Span::styled(toggle_hint, Style::default().fg(Color::Yellow))));
 
     let p = Paragraph::new(lines)
         .block(block)

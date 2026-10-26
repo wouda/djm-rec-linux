@@ -12,8 +12,7 @@ impl ApplianceSetup {
         "alsa-utils",
         "flac",
         "pipewire",
-        "bluez",
-        "bluez-utils",
+        "networkmanager",
         "avahi",
     ];
 
@@ -115,8 +114,8 @@ WantedBy=default.target
 
     pub fn generate_remote_service() -> &'static str {
         r#"[Unit]
-Description=djm-box BLE GATT & Web Remote Bridge Service
-After=djm-box-daemon.service dbus.service bluetooth.service
+Description=djm-box Web Remote Bridge & Hotspot Service
+After=djm-box-daemon.service NetworkManager.service
 Wants=djm-box-daemon.service
 
 [Service]
@@ -366,5 +365,9 @@ mod tests {
 
         let wp = ApplianceSetup::generate_wireplumber_rule();
         assert!(wp.contains("pro-audio"));
+
+        let remote_svc = ApplianceSetup::generate_remote_service();
+        assert!(remote_svc.contains("NetworkManager.service"));
+        assert!(!remote_svc.contains("bluetooth.service"));
     }
 }

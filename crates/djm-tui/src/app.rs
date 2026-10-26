@@ -4,7 +4,7 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 use djm_common::config::AppConfig;
-use djm_common::protocol::{ControlCommand, PairingInfo, Telemetry};
+use djm_common::protocol::{ControlCommand, HotspotControl, PairingInfo, Telemetry};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::stdout;
@@ -23,6 +23,23 @@ pub struct TuiApp {
 impl TuiApp {
     pub fn new(socket_path: PathBuf, config: AppConfig) -> Self {
         Self { socket_path, config }
+    }
+
+    fn make_pairing_info(&self) -> PairingInfo {
+        let hotspot_active = HotspotControl::is_hotspot_active();
+        PairingInfo::auto_detect(
+            "DJM-Box".to_string(),
+            self.config.remote.auth_token.clone(),
+            if !self.config.remote.remote_public_url.is_empty() {
+                Some(self.config.remote.remote_public_url.clone())
+            } else {
+                None
+            },
+            8080,
+            self.config.remote.hotspot_ssid.clone(),
+            self.config.remote.hotspot_password.clone(),
+            hotspot_active,
+        )
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -69,18 +86,9 @@ impl TuiApp {
         let backend = CrosstermBackend::new(stdout());
         let mut terminal = Terminal::new(backend)?;
 
-        let mut pairing_info = PairingInfo::auto_detect(
-            self.config.remote.ble_device_name.clone(),
-            self.config.remote.auth_token.clone(),
-            if !self.config.remote.remote_public_url.is_empty() {
-                Some(self.config.remote.remote_public_url.clone())
-            } else {
-                None
-            },
-            8080,
-        );
-
+        let mut pairing_info = self.make_pairing_info();
         let mut show_pairing = false;
+        let mut show_wifi_qr = false;
         let mut status_msg: Option<String> = None;
         let mut status_expire = std::time::Instant::now();
 
@@ -99,6 +107,7 @@ impl TuiApp {
                     &current_telemetry,
                     &pairing_info,
                     show_pairing,
+                    show_wifi_qr,
                     status_msg.as_deref(),
                 );
             })?;
@@ -111,20 +120,43 @@ impl TuiApp {
                         KeyCode::Char('p') | KeyCode::Char('P') => {
                             show_pairing = !show_pairing;
                             if show_pairing {
-                                pairing_info = PairingInfo::auto_detect(
-                                    self.config.remote.ble_device_name.clone(),
-                                    self.config.remote.auth_token.clone(),
-                                    if !self.config.remote.remote_public_url.is_empty() {
-                                        Some(self.config.remote.remote_public_url.clone())
-                                    } else {
-                                        None
-                                    },
-                                    8080,
-                                );
+                                pairing_info = self.make_pairing_info();
                                 let _ = cmd_tx.send(ControlCommand::OpenPairingWindow).await;
                                 status_msg = Some("Phone pairing modal opened (QR code refreshed)".to_string());
                                 status_expire = std::time::Instant::now() + Duration::from_secs(5);
                             }
+                        }
+                        KeyCode::Tab | KeyCode::Char('w') | KeyCode::Char('W') if show_pairing => {
+                            show_wifi_qr = !show_wifi_qr;
+                            let mode_desc = if show_wifi_qr { "Wi-Fi Hotspot" } else { "Web Dashboard" };
+                            status_msg = Some(format!("Switched to Step {} QR: {}", if show_wifi_qr { "1" } else { "2" }, mode_desc));
+                            status_expire = std::time::Instant::now() + Duration::from_secs(3);
+                        }
+                        KeyCode::Char('h') | KeyCode::Char('H') => {
+                            if HotspotControl::is_hotspot_active() {
+                                match HotspotControl::stop_hotspot() {
+                                    Ok(_) => {
+                                        status_msg = Some("Local Wi-Fi Hotspot stopped".to_string());
+                                    }
+                                    Err(e) => {
+                                        status_msg = Some(format!("Failed to stop hotspot: {}", e));
+                                    }
+                                }
+                            } else {
+                                match HotspotControl::start_hotspot(&self.config.remote.hotspot_ssid, &self.config.remote.hotspot_password) {
+                                    Ok(true) => {
+                                        status_msg = Some(format!("✓ Wi-Fi Hotspot started ('{}' on 10.42.0.1)", self.config.remote.hotspot_ssid));
+                                    }
+                                    Ok(false) => {
+                                        status_msg = Some("Failed to start Wi-Fi Hotspot (check nmcli/hardware)".to_string());
+                                    }
+                                    Err(e) => {
+                                        status_msg = Some(format!("Hotspot error: {}", e));
+                                    }
+                                }
+                            }
+                            pairing_info = self.make_pairing_info();
+                            status_expire = std::time::Instant::now() + Duration::from_secs(4);
                         }
                         KeyCode::Esc => {
                             show_pairing = false;

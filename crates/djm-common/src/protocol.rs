@@ -219,6 +219,8 @@ pub enum ControlCommand {
     ResetPeaks,
     /// 0x06: Open phone pairing window for N seconds
     OpenPairingWindow,
+    /// 0x07: Toggle local Wi-Fi Hotspot on/off
+    ToggleHotspot,
 }
 
 impl ControlCommand {
@@ -229,6 +231,7 @@ impl ControlCommand {
     pub const OPCODE_TOGGLE_GUARD: u8 = 0x04;
     pub const OPCODE_RESET_PEAKS: u8 = 0x05;
     pub const OPCODE_PAIRING_WINDOW: u8 = 0x06;
+    pub const OPCODE_TOGGLE_HOTSPOT: u8 = 0x07;
 
     pub fn to_bytes(&self) -> Vec<u8> {
         match self {
@@ -248,6 +251,7 @@ impl ControlCommand {
             ControlCommand::ToggleAutoGuard => vec![Self::OPCODE_TOGGLE_GUARD],
             ControlCommand::ResetPeaks => vec![Self::OPCODE_RESET_PEAKS],
             ControlCommand::OpenPairingWindow => vec![Self::OPCODE_PAIRING_WINDOW],
+            ControlCommand::ToggleHotspot => vec![Self::OPCODE_TOGGLE_HOTSPOT],
         }
     }
 
@@ -282,6 +286,7 @@ impl ControlCommand {
             Self::OPCODE_TOGGLE_GUARD => Ok(ControlCommand::ToggleAutoGuard),
             Self::OPCODE_RESET_PEAKS => Ok(ControlCommand::ResetPeaks),
             Self::OPCODE_PAIRING_WINDOW => Ok(ControlCommand::OpenPairingWindow),
+            Self::OPCODE_TOGGLE_HOTSPOT => Ok(ControlCommand::ToggleHotspot),
             other => Err(ProtocolError::UnknownOpcode(other)),
         }
     }
@@ -346,22 +351,32 @@ pub struct PairingInfo {
     pub name: String,
     pub host: String,
     pub port: u16,
-    pub ble_service_uuid: String,
     pub token: String,
     #[serde(default)]
     pub local_ip: Option<String>,
     #[serde(default)]
     pub mdns_hostname: Option<String>,
+    #[serde(default)]
+    pub hotspot_ssid: String,
+    #[serde(default)]
+    pub hotspot_password: String,
+    #[serde(default)]
+    pub hotspot_active: bool,
 }
 
 impl PairingInfo {
-    pub const BLE_SERVICE_UUID: &'static str = "0000d900-0000-1000-8000-00805f9b34fb";
-    pub const BLE_CHAR_TELEMETRY: &'static str = "0000d901-0000-1000-8000-00805f9b34fb";
-    pub const BLE_CHAR_METADATA: &'static str = "0000d902-0000-1000-8000-00805f9b34fb";
-    pub const BLE_CHAR_CONTROL: &'static str = "0000d903-0000-1000-8000-00805f9b34fb";
+    pub const DEFAULT_HOTSPOT_GATEWAY: &'static str = "10.42.0.1";
 
     /// Automatically detects Wi-Fi/LAN IP and mDNS hostname, prioritizing direct reachable endpoints
-    pub fn auto_detect(name: String, token: String, remote_public_url: Option<String>, port: u16) -> Self {
+    pub fn auto_detect(
+        name: String,
+        token: String,
+        remote_public_url: Option<String>,
+        port: u16,
+        hotspot_ssid: String,
+        hotspot_password: String,
+        hotspot_active: bool,
+    ) -> Self {
         let local_ip = detect_local_ip();
         let mdns_hostname = detect_hostname();
 
@@ -372,6 +387,8 @@ impl PairingInfo {
         // 4. Default fallback ("djm-box.local")
         let host = if let Some(url) = remote_public_url.filter(|u| !u.trim().is_empty()) {
             url
+        } else if hotspot_active {
+            Self::DEFAULT_HOTSPOT_GATEWAY.to_string()
         } else if let Some(ref ip) = local_ip {
             ip.clone()
         } else if let Some(ref mdns) = mdns_hostname {
@@ -384,10 +401,12 @@ impl PairingInfo {
             name,
             host,
             port,
-            ble_service_uuid: Self::BLE_SERVICE_UUID.to_string(),
             token,
             local_ip,
             mdns_hostname,
+            hotspot_ssid,
+            hotspot_password,
+            hotspot_active,
         }
     }
 
@@ -396,9 +415,117 @@ impl PairingInfo {
         format!("http://{}:{}/?token={}", self.host, self.port, self.token)
     }
 
+    /// Dedicated hotspot gateway URL
+    pub fn to_hotspot_web_url(&self) -> String {
+        format!("http://{}:{}/?token={}", Self::DEFAULT_HOTSPOT_GATEWAY, self.port, self.token)
+    }
+
+    /// Direct Wi-Fi hotspot connection string for phone camera auto-join QR code
+    pub fn to_wifi_qr_payload(&self) -> String {
+        format!("WIFI:T:WPA;S:{};P:{};;", self.hotspot_ssid, self.hotspot_password)
+    }
+
     pub fn to_qr_payload(&self) -> String {
         // Direct clickable URL for phone camera and companion app instant auth
         self.to_web_url()
+    }
+}
+
+/// Helper utilities for querying and controlling NetworkManager Wi-Fi hotspots
+pub struct HotspotControl;
+
+impl HotspotControl {
+    pub const CONNECTION_NAME: &'static str = "djm-box-hotspot";
+
+    /// Checks if NetworkManager currently has an active hotspot connection named djm-box-hotspot
+    pub fn is_hotspot_active() -> bool {
+        if let Ok(output) = std::process::Command::new("nmcli")
+            .args(["-t", "-f", "NAME,STATE", "connection", "show", "--active"])
+            .output()
+        {
+            if let Ok(text) = String::from_utf8(output.stdout) {
+                for line in text.lines() {
+                    let parts: Vec<&str> = line.split(':').collect();
+                    if parts.len() >= 2 && parts[0] == Self::CONNECTION_NAME && parts[1] == "activated" {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Checks if the host has any active non-loopback network connection (Wi-Fi, Ethernet, etc.) other than the hotspot
+    pub fn has_active_network() -> bool {
+        if let Ok(output) = std::process::Command::new("nmcli")
+            .args(["-t", "-f", "NAME,TYPE,STATE", "connection", "show", "--active"])
+            .output()
+        {
+            if let Ok(text) = String::from_utf8(output.stdout) {
+                for line in text.lines() {
+                    let parts: Vec<&str> = line.split(':').collect();
+                    if parts.len() >= 3 && parts[0] != Self::CONNECTION_NAME && parts[2] == "activated" {
+                        return true;
+                    }
+                }
+            }
+        }
+        // Fallback: check if detect_local_ip() finds an IP other than loopback or 10.42.0.1
+        if let Some(ip) = detect_local_ip() {
+            if !ip.starts_with("127.") && ip != "10.42.0.1" {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Finds the first available Wi-Fi device interface name (e.g. wlan0, wlp2s0)
+    pub fn find_wifi_device() -> Option<String> {
+        if let Ok(output) = std::process::Command::new("nmcli")
+            .args(["-t", "-f", "DEVICE,TYPE", "device"])
+            .output()
+        {
+            if let Ok(text) = String::from_utf8(output.stdout) {
+                for line in text.lines() {
+                    let parts: Vec<&str> = line.split(':').collect();
+                    if parts.len() >= 2 && parts[1] == "wifi" {
+                        return Some(parts[0].to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Starts the NetworkManager Wi-Fi hotspot
+    pub fn start_hotspot(ssid: &str, password: &str) -> std::io::Result<bool> {
+        if Self::is_hotspot_active() {
+            return Ok(true);
+        }
+        let ifname_arg = Self::find_wifi_device();
+        let mut cmd = std::process::Command::new("nmcli");
+        cmd.args(["device", "wifi", "hotspot"]);
+        if let Some(ref ifname) = ifname_arg {
+            cmd.args(["ifname", ifname]);
+        }
+        cmd.args([
+            "con-name",
+            Self::CONNECTION_NAME,
+            "ssid",
+            ssid,
+            "password",
+            password,
+        ]);
+        let output = cmd.output()?;
+        Ok(output.status.success())
+    }
+
+    /// Stops the NetworkManager Wi-Fi hotspot
+    pub fn stop_hotspot() -> std::io::Result<bool> {
+        let output = std::process::Command::new("nmcli")
+            .args(["connection", "down", Self::CONNECTION_NAME])
+            .output()?;
+        Ok(output.status.success())
     }
 }
 
@@ -474,6 +601,11 @@ mod tests {
         let b = bookmark_cmd.to_bytes();
         let parsed = ControlCommand::from_bytes(&b).expect("bookmark parse failed");
         assert_eq!(bookmark_cmd, parsed);
+
+        let toggle_hs = ControlCommand::ToggleHotspot;
+        let b = toggle_hs.to_bytes();
+        let parsed = ControlCommand::from_bytes(&b).expect("toggle hotspot parse failed");
+        assert_eq!(toggle_hs, parsed);
     }
 
     #[test]
@@ -482,13 +614,17 @@ mod tests {
             name: "DJM-Box-Recorder".to_string(),
             host: "djm-box.local".to_string(),
             port: 8080,
-            ble_service_uuid: PairingInfo::BLE_SERVICE_UUID.to_string(),
             token: "123456".to_string(),
             local_ip: Some("192.168.1.50".to_string()),
             mdns_hostname: Some("djm-box.local".to_string()),
+            hotspot_ssid: "DJM-Box-Booth".to_string(),
+            hotspot_password: "supersecret".to_string(),
+            hotspot_active: false,
         };
         let url = pair.to_qr_payload();
         assert_eq!(url, "http://djm-box.local:8080/?token=123456");
+        let wifi_qr = pair.to_wifi_qr_payload();
+        assert_eq!(wifi_qr, "WIFI:T:WPA;S:DJM-Box-Booth;P:supersecret;;");
         let json = serde_json::to_string(&pair).unwrap();
         let loaded: PairingInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(pair, loaded);

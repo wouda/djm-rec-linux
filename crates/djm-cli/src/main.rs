@@ -3,7 +3,7 @@ pub mod setup;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use djm_common::config::AppConfig;
-use djm_common::protocol::{default_socket_path, ControlCommand, PairingInfo, RecordingState, Telemetry};
+use djm_common::protocol::{default_socket_path, ControlCommand, HotspotControl, PairingInfo, RecordingState, Telemetry};
 use setup::ApplianceSetup;
 use std::io::Write;
 use std::process::Command;
@@ -22,6 +22,16 @@ struct Cli {
 }
 
 #[derive(Subcommand, Debug)]
+enum HotspotAction {
+    /// Turn on the local Wi-Fi hotspot
+    On,
+    /// Turn off the local Wi-Fi hotspot
+    Off,
+    /// Query current Wi-Fi hotspot status
+    Status,
+}
+
+#[derive(Subcommand, Debug)]
 enum Commands {
     /// Run initial setup and installation for CachyOS (udev, systemd, WirePlumber, dependencies)
     Setup {
@@ -37,9 +47,14 @@ enum Commands {
     },
     /// Launch the stateless Ratatui terminal dashboard
     Tui,
-    /// Launch the isolated BLE GATT and Web Remote Bridge service
+    /// Launch the isolated Web Remote Bridge & Hotspot service
     Remote,
-    /// Show phone pairing PIN and QR code in terminal
+    /// Manage local NetworkManager Wi-Fi hotspot (on, off, status)
+    Hotspot {
+        #[command(subcommand)]
+        action: Option<HotspotAction>,
+    },
+    /// Show phone pairing PIN, Wi-Fi credentials, and dashboard URL
     Pair,
     /// Send an immediate file split command to the recording daemon
     Split,
@@ -98,23 +113,72 @@ async fn main() -> Result<()> {
                 std::process::exit(status.code().unwrap_or(1));
             }
         }
+        Commands::Hotspot { action } => {
+            let config_path = AppConfig::default_config_path();
+            let config = AppConfig::load_or_create(&config_path)?;
+            let action = action.unwrap_or(HotspotAction::Status);
+
+            match action {
+                HotspotAction::On => {
+                    println!("Starting local Wi-Fi hotspot '{}' via NetworkManager...", config.remote.hotspot_ssid);
+                    match HotspotControl::start_hotspot(&config.remote.hotspot_ssid, &config.remote.hotspot_password) {
+                        Ok(true) => {
+                            println!("✓ Local Wi-Fi Hotspot is ACTIVE");
+                            println!("  SSID:     {}", config.remote.hotspot_ssid);
+                            println!("  Password: {}", config.remote.hotspot_password);
+                            println!("  Gateway:  http://10.42.0.1:8080/?token={}", config.remote.auth_token);
+                        }
+                        Ok(false) => {
+                            eprintln!("Failed to start hotspot via nmcli. Check 'nmcli device' status.");
+                        }
+                        Err(e) => {
+                            eprintln!("Error executing nmcli: {}", e);
+                        }
+                    }
+                }
+                HotspotAction::Off => {
+                    println!("Stopping local Wi-Fi hotspot...");
+                    match HotspotControl::stop_hotspot() {
+                        Ok(_) => println!("✓ Local Wi-Fi Hotspot stopped."),
+                        Err(e) => eprintln!("Error stopping hotspot: {}", e),
+                    }
+                }
+                HotspotAction::Status => {
+                    let active = HotspotControl::is_hotspot_active();
+                    println!("\n=== djm-box Wi-Fi Hotspot Status ===");
+                    println!("Hotspot Status:   {}", if active { "\x1b[32;1m● ACTIVE\x1b[0m" } else { "\x1b[90m○ INACTIVE\x1b[0m" });
+                    println!("Configured Mode:  {}", config.remote.hotspot_mode);
+                    println!("SSID:             {}", config.remote.hotspot_ssid);
+                    println!("WPA2 Password:    {}", config.remote.hotspot_password);
+                    if active {
+                        println!("Direct Gateway:   http://10.42.0.1:8080/?token={}", config.remote.auth_token);
+                    }
+                    println!("Wi-Fi QR String:  WIFI:T:WPA;S:{};P:{};;", config.remote.hotspot_ssid, config.remote.hotspot_password);
+                }
+            }
+        }
         Commands::Pair => {
             let config_path = AppConfig::default_config_path();
             let config = AppConfig::load_or_create(&config_path)?;
+            let hotspot_active = HotspotControl::is_hotspot_active();
             let info = PairingInfo::auto_detect(
-                config.remote.ble_device_name,
-                config.remote.auth_token,
+                "DJM-Box".to_string(),
+                config.remote.auth_token.clone(),
                 if !config.remote.remote_public_url.is_empty() {
                     Some(config.remote.remote_public_url)
                 } else {
                     None
                 },
                 8080,
+                config.remote.hotspot_ssid.clone(),
+                config.remote.hotspot_password.clone(),
+                hotspot_active,
             );
 
             let web_url = info.to_web_url();
             println!("\n=== djm-box Companion Phone Pairing ===");
-            println!("Direct Wi-Fi URL: {}", web_url);
+            println!("Direct Web URL:   {}", web_url);
+            println!("Hotspot Gateway:  {}", info.to_hotspot_web_url());
             if let Some(ref mdns) = info.mdns_hostname {
                 println!("mDNS Hostname:    http://{}:{}/?token={}", mdns, info.port, info.token);
             }
@@ -122,9 +186,13 @@ async fn main() -> Result<()> {
                 println!("Detected LAN IP:  {}", ip);
             }
             println!("Auth PIN:         {}", info.token);
-            println!("BLE Device:       {}", info.name);
-            println!("BLE UUID:         {}\n", info.ble_service_uuid);
-            println!("Tip: Open 'djm-box tui' and press [P] to scan the pairing QR code with your phone camera.");
+            println!("\n--- Local Wi-Fi Hotspot ---");
+            println!("Hotspot Status:   {}", if hotspot_active { "\x1b[32;1m● ACTIVE\x1b[0m" } else { "\x1b[90m○ INACTIVE\x1b[0m" });
+            println!("Hotspot SSID:     {}", info.hotspot_ssid);
+            println!("Hotspot Password: {}", info.hotspot_password);
+            println!("Wi-Fi QR Payload: {}", info.to_wifi_qr_payload());
+            println!("\nTip: Open 'djm-box tui' and press [P] to scan the pairing QR code with your phone camera.");
+            println!("Inside the modal, press [Tab] or [W] to toggle between the Wi-Fi QR and Dashboard QR.");
         }
         Commands::Split => {
             send_socket_command(ControlCommand::SplitFile).await?;

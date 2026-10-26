@@ -132,5 +132,12 @@ void main() {
       final info = PairingInfo.fromQrString("654321");
       expect(info.token, "654321");
     });
+
+    test('Parses from Wi-Fi Hotspot QR format', () {
+      final info = PairingInfo.fromQrString("WIFI:T:WPA;S:DJM-Box-Booth;P:secret123;;");
+      expect(info.hotspotSsid, "DJM-Box-Booth");
+      expect(info.hotspotPassword, "secret123");
+      expect(info.host, "10.42.0.1");
+    });
   });
 }
