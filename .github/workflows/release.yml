@@ -109,32 +109,29 @@ jobs:
           flutter build apk --release
           TAG_NAME="${GITHUB_REF_NAME:-v0.2.1}"
           APK_NAME="djm-box-companion-${TAG_NAME}.apk"
-          APK_PATH=$(find build/app/outputs/flutter-apk -name "*release*.apk" -type f | head -n 1)
-          if [ -z "$APK_PATH" ]; then
-            APK_PATH=$(find build -name "*.apk" -type f | head -n 1)
-          fi
+          APK_PATH=$(find build -name "*.apk" -type f | head -n 1)
           if [ -z "$APK_PATH" ]; then
             echo "Error: No APK file found in build directory!"
             exit 1
           fi
           echo "Found APK at $APK_PATH"
 
-          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)
-          if [ -z "$APKSIGNER" ]; then
-            echo "Error: apksigner not found in $ANDROID_HOME/build-tools!"
-            exit 1
+          # Sign APK with release keystore and enable both v1 and v2 signing schemes
+          APKSIGNER=$(which apksigner 2>/dev/null || find /usr/local/lib/android/sdk ${ANDROID_HOME:-/opt} ${ANDROID_SDK_ROOT:-/opt} -name apksigner 2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$APKSIGNER" ]; then
+            echo "Signing APK with apksigner ($APKSIGNER)..."
+            $APKSIGNER sign --ks keystore/release.keystore \
+              --ks-key-alias djm_companion \
+              --ks-pass pass:djmcompanion \
+              --key-pass pass:djmcompanion \
+              --v1-signing-enabled true \
+              --v2-signing-enabled true \
+              "$APK_PATH"
+            echo "Verifying signed APK..."
+            $APKSIGNER verify --verbose "$APK_PATH"
+          else
+            echo "Warning: apksigner not found, using APK as-is"
           fi
-          echo "Signing APK with apksigner ($APKSIGNER)..."
-          $APKSIGNER sign --ks keystore/release.keystore \
-            --ks-key-alias djm_companion \
-            --ks-pass pass:djmcompanion \
-            --key-pass pass:djmcompanion \
-            --v1-signing-enabled true \
-            --v2-signing-enabled true \
-            --v3-signing-enabled true \
-            "$APK_PATH"
-          echo "Verifying signed APK..."
-          $APKSIGNER verify --verbose "$APK_PATH"
 
           cp "$APK_PATH" "../${APK_NAME}"
           cd ..

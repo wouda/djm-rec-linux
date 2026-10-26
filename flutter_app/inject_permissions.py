@@ -1,7 +1,5 @@
 import os
-import re
 
-# 1. Inject permissions into AndroidManifest.xml
 manifest = "android/app/src/main/AndroidManifest.xml"
 if os.path.exists(manifest):
     with open(manifest, "r") as f:
@@ -24,32 +22,3 @@ if os.path.exists(manifest):
         with open(manifest, "w") as f:
             f.write(content)
         print("Successfully injected BLE and network permissions into AndroidManifest.xml")
-
-# 2. Configure Groovy build.gradle if present
-gradle_file = "android/app/build.gradle"
-if os.path.exists(gradle_file):
-    with open(gradle_file, "r") as f:
-        content = f.read()
-
-    # Enforce stable targetSdk 34 and minSdk 24
-    content = re.sub(r'compileSdk\s+.*', 'compileSdk 34', content)
-    content = re.sub(r'minSdkVersion\s+.*', 'minSdkVersion 24', content)
-    content = re.sub(r'targetSdkVersion\s+.*', 'targetSdkVersion 34', content)
-
-    with open(gradle_file, "w") as f:
-        f.write(content)
-    print("Successfully configured android/app/build.gradle with stable SDK 34")
-
-# 3. Configure Kotlin DSL build.gradle.kts if present
-kts_file = "android/app/build.gradle.kts"
-if os.path.exists(kts_file):
-    with open(kts_file, "r") as f:
-        content = f.read()
-
-    content = re.sub(r'compileSdk\s*=.*', 'compileSdk = 34', content)
-    content = re.sub(r'minSdk\s*=.*', 'minSdk = 24', content)
-    content = re.sub(r'targetSdk\s*=.*', 'targetSdk = 34', content)
-
-    with open(kts_file, "w") as f:
-        f.write(content)
-    print("Successfully configured android/app/build.gradle.kts with stable SDK 34")
