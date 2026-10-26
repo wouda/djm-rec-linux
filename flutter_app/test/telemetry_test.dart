@@ -103,20 +103,20 @@ void main() {
     test('DropBookmark serializes with opcode 0x01', () {
       final cmd = DropBookmarkCommand();
       final bytes = cmd.toBytes();
-      expect(bytes, Uint8List.fromList([0x01]));
+      expect(bytes, equals(Uint8List.fromList([0x01])));
     });
 
     test('SplitFile serializes with opcode 0x02', () {
       final cmd = SplitFileCommand();
       final bytes = cmd.toBytes();
-      expect(bytes, Uint8List.fromList([0x02]));
+      expect(bytes, equals(Uint8List.fromList([0x02])));
     });
 
     test('SetHardwarePad serializes with opcode 0x03 and pad byte', () {
       final cmd = SetHardwarePadCommand(-19);
       final bytes = cmd.toBytes();
       expect(bytes[0], 0x03);
-      expect(bytes[1] as int, (-19) & 0xFF);
+      expect(bytes[1], (-19) & 0xFF);
     });
   });
 

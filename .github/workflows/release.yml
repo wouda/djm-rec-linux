@@ -93,9 +93,14 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Install dependencies & run tests
+      - name: Configure Flutter project & run tests
         working-directory: flutter_app
         run: |
+          cp android/app/src/main/AndroidManifest.xml /tmp/AndroidManifest.xml.bak 2>/dev/null || true
+          flutter create . --org com.craterdnb --project-name djm_companion
+          if [ -f /tmp/AndroidManifest.xml.bak ]; then
+            cp /tmp/AndroidManifest.xml.bak android/app/src/main/AndroidManifest.xml
+          fi
           flutter pub get
           flutter test
 
@@ -103,7 +108,7 @@ jobs:
         working-directory: flutter_app
         run: |
           flutter build apk --release
-          TAG_NAME="${GITHUB_REF_NAME:-v0.2.0}"
+          TAG_NAME="${GITHUB_REF_NAME:-v0.2.1}"
           APK_NAME="djm-box-companion-${TAG_NAME}.apk"
           cp build/app/outputs/flutter-apk/app-release.apk "../${APK_NAME}"
           cd ..

@@ -47,18 +47,22 @@ class PairingInfo {
     }
 
     // 2. Try parsing URL format: http://djm-box.local:8080/?token=123456
-    try {
-      final uri = Uri.parse(trimmed);
-      final token = uri.queryParameters['token'] ?? "";
-      final host = uri.host.isNotEmpty ? uri.host : "djm-box.local";
-      final port = uri.port != 0 ? uri.port : 8080;
-      return PairingInfo(
-        host: host,
-        port: port,
-        token: token,
-        mdnsHostname: host.endsWith('.local') ? host : null,
-      );
-    } catch (_) {}
+    if (trimmed.startsWith('http://') ||
+        trimmed.startsWith('https://') ||
+        trimmed.contains('?token=')) {
+      try {
+        final uri = Uri.parse(trimmed);
+        final token = uri.queryParameters['token'] ?? "";
+        final host = uri.host.isNotEmpty ? uri.host : "djm-box.local";
+        final port = uri.port != 0 ? uri.port : 8080;
+        return PairingInfo(
+          host: host,
+          port: port,
+          token: token,
+          mdnsHostname: host.endsWith('.local') ? host : null,
+        );
+      } catch (_) {}
+    }
 
     // Fallback: treat the entire string as the auth token
     return PairingInfo(token: trimmed);
