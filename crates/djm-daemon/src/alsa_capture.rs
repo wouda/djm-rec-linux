@@ -35,23 +35,56 @@ impl AlsaCapture {
 
     /// Captures audio in a dedicated real-time thread, de-interleaving the REC OUT channel pair
     /// and writing into the lock-free SPSC ring buffer.
-    pub fn run_capture_loop(&self, mut producer: Producer<(i32, i32)>) -> Result<(), CaptureError> {
+    pub fn run_capture_loop(
+        &self,
+        mut producer: Producer<(i32, i32)>,
+        ready_tx: Option<std::sync::mpsc::Sender<Result<(), String>>>,
+    ) -> Result<(), CaptureError> {
         info!(
             "Initializing ALSA capture for {} on device {} ({} channels, {} Hz)",
             self.profile.name, self.device_name, self.profile.total_channels, self.profile.native_sample_rate
         );
 
-        let pcm = match PCM::new(&self.device_name, alsa::Direction::Capture, false) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("Failed to open PCM capture device {}: {}", self.device_name, e);
-                return Err(CaptureError::Alsa(e));
+        let mut attempts = 0;
+        let pcm = loop {
+            match PCM::new(&self.device_name, alsa::Direction::Capture, false) {
+                Ok(p) => break p,
+                Err(e) => {
+                    attempts += 1;
+                    if attempts < 5 && e.errno() == 16 {
+                        warn!(
+                            "PCM capture device {} busy, waiting for release (attempt {}/5)...",
+                            self.device_name, attempts
+                        );
+                        std::thread::sleep(Duration::from_millis(200));
+                    } else {
+                        warn!("Failed to open PCM capture device {}: {}", self.device_name, e);
+                        if let Some(tx) = ready_tx {
+                            let _ = tx.send(Err(format!("snd_pcm_open failed: {}", e)));
+                        }
+                        return Err(CaptureError::Alsa(e));
+                    }
+                }
             }
         };
 
         // Configure hardware parameters
-        let hwp = HwParams::any(&pcm)?;
-        hwp.set_access(Access::RWInterleaved)?;
+        let hwp = match HwParams::any(&pcm) {
+            Ok(h) => h,
+            Err(e) => {
+                if let Some(tx) = ready_tx {
+                    let _ = tx.send(Err(format!("HwParams::any failed: {}", e)));
+                }
+                return Err(CaptureError::Alsa(e));
+            }
+        };
+
+        if let Err(e) = hwp.set_access(Access::RWInterleaved) {
+            if let Some(tx) = ready_tx {
+                let _ = tx.send(Err(format!("set_access failed: {}", e)));
+            }
+            return Err(CaptureError::Alsa(e));
+        }
 
         // Pioneer / AlphaTheta USB mixers natively use S24_3LE (3-byte 24-bit PCM) on hw:X,0,
         // while plughw or other interfaces may use S32_LE or S24_LE (4-byte container).
@@ -59,20 +92,41 @@ impl AlsaCapture {
             (Format::S243LE, 3usize)
         } else if hwp.set_format(Format::s32()).is_ok() {
             (Format::s32(), 4usize)
-        } else {
-            hwp.set_format(Format::s24())?;
+        } else if hwp.set_format(Format::s24()).is_ok() {
             (Format::s24(), 4usize)
+        } else {
+            let err = alsa::Error::new("snd_pcm_hw_params_set_format", -22);
+            if let Some(tx) = ready_tx {
+                let _ = tx.send(Err("set_format failed for S24_3LE, S32_LE, S24_LE".to_string()));
+            }
+            return Err(CaptureError::Alsa(err));
         };
 
-        hwp.set_channels(self.profile.total_channels)?;
-        hwp.set_rate(self.profile.native_sample_rate, ValueOr::Nearest)?;
+        if let Err(e) = hwp.set_channels(self.profile.total_channels) {
+            if let Some(tx) = ready_tx {
+                let _ = tx.send(Err(format!("set_channels failed: {}", e)));
+            }
+            return Err(CaptureError::Alsa(e));
+        }
+
+        if let Err(e) = hwp.set_rate(self.profile.native_sample_rate, ValueOr::Nearest) {
+            if let Some(tx) = ready_tx {
+                let _ = tx.send(Err(format!("set_rate failed: {}", e)));
+            }
+            return Err(CaptureError::Alsa(e));
+        }
 
         let buffer_size = (self.profile.native_sample_rate / 20) as alsa::pcm::Frames; // ~50ms buffer
         let period_size = (self.profile.native_sample_rate / 100) as alsa::pcm::Frames; // ~10ms period
         let _ = hwp.set_buffer_size_near(buffer_size);
         let _ = hwp.set_period_size_near(period_size, ValueOr::Nearest);
 
-        pcm.hw_params(&hwp)?;
+        if let Err(e) = pcm.hw_params(&hwp) {
+            if let Some(tx) = ready_tx {
+                let _ = tx.send(Err(format!("hw_params application failed: {}", e)));
+            }
+            return Err(CaptureError::Alsa(e));
+        }
 
         let channels = self.profile.total_channels as usize;
         let (rec_l_idx, rec_r_idx) = (
@@ -90,6 +144,10 @@ impl AlsaCapture {
             "Starting ALSA capture loop on {} (format={:?}, {} bytes/sample, rec_out=({}, {}))...",
             self.device_name, sample_format, bytes_per_sample, rec_l_idx, rec_r_idx
         );
+
+        if let Some(tx) = ready_tx {
+            let _ = tx.send(Ok(()));
+        }
 
         while self.running.load(Ordering::Relaxed) {
             match io.readi(&mut read_buffer) {

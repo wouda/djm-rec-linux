@@ -226,9 +226,7 @@ WantedBy=default.target
     ]
     actions = {
       update-props = {
-        api.alsa.use-ucm = false
-        session.suspend-timeout-seconds = 0
-        device.profile = "pro-audio"
+        device.disabled = true
       }
     }
   }
@@ -237,18 +235,36 @@ WantedBy=default.target
     }
 
     pub fn install_wireplumber_rules(dry_run: bool) -> Result<()> {
-        let wp_dir = if let Some(home) = std::env::var_os("HOME") {
-            PathBuf::from(home).join(".config/wireplumber/wireplumber.conf.d")
-        } else {
-            PathBuf::from("/etc/wireplumber/wireplumber.conf.d")
+        let rule = Self::generate_wireplumber_rule();
+
+        if let Some(home) = std::env::var_os("HOME") {
+            let wp_dir = PathBuf::from(home).join(".config/wireplumber/wireplumber.conf.d");
+            let wp_file = wp_dir.join("51-djm-pro-audio.conf");
+            info!("Installing WirePlumber rules: {}", wp_file.display());
+            if !dry_run {
+                fs::create_dir_all(&wp_dir)?;
+                fs::write(&wp_file, rule)?;
+                let _ = std::process::Command::new("systemctl")
+                    .args(["--user", "restart", "wireplumber"])
+                    .status();
+            }
+        }
+
+        let is_root = unsafe {
+            extern "C" {
+                fn geteuid() -> u32;
+            }
+            geteuid() == 0
         };
 
-        let wp_file = wp_dir.join("51-djm-pro-audio.conf");
-        info!("Installing WirePlumber pro-audio rules: {}", wp_file.display());
-
-        if !dry_run {
-            fs::create_dir_all(&wp_dir)?;
-            fs::write(&wp_file, Self::generate_wireplumber_rule())?;
+        if is_root {
+            let sys_wp_dir = PathBuf::from("/etc/wireplumber/wireplumber.conf.d");
+            let sys_wp_file = sys_wp_dir.join("51-djm-pro-audio.conf");
+            info!("Installing system WirePlumber rules: {}", sys_wp_file.display());
+            if !dry_run {
+                fs::create_dir_all(&sys_wp_dir)?;
+                fs::write(&sys_wp_file, rule)?;
+            }
         }
 
         Ok(())
@@ -376,7 +392,7 @@ mod tests {
         assert!(daemon_svc.contains("CPUSchedulingPriority=80"));
 
         let wp = ApplianceSetup::generate_wireplumber_rule();
-        assert!(wp.contains("pro-audio"));
+        assert!(wp.contains("device.disabled = true"));
 
         let remote_svc = ApplianceSetup::generate_remote_service();
         assert!(remote_svc.contains("NetworkManager.service"));

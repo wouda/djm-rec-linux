@@ -165,7 +165,11 @@ impl AudioEngine {
             if !mock_mode {
                 if active_mixer_profile.is_some() && !capture_thread_alive.load(Ordering::Relaxed) {
                     warn!("DJ mixer capture stream ended or USB disconnected.");
-                    push_event(&mut recent_events, "DJ mixer disconnected. Finalizing active recording...".to_string());
+                    if active_writer.is_some() || active_log.is_some() {
+                        push_event(&mut recent_events, "DJ mixer disconnected. Finalizing active recording...".to_string());
+                    } else {
+                        push_event(&mut recent_events, "DJ mixer disconnected.".to_string());
+                    }
 
                     // Safely close and finalize active recording so no data is corrupted
                     if let Some(mut log) = active_log.take() {
@@ -191,6 +195,7 @@ impl AudioEngine {
 
                     active_mixer_profile = None;
                     active_card_idx = None;
+                    last_mixer_probe = Instant::now();
                     silence_gate.set_state(RecordingState::Disconnected);
                     live_peak_l = -9600;
                     live_peak_r = -9600;
@@ -204,40 +209,68 @@ impl AudioEngine {
                         sample_rate = prof.native_sample_rate;
                         let new_cap = (sample_rate / 10) as usize;
                         let (new_prod, new_cons) = RingBuffer::<(i32, i32)>::new(new_cap);
-                        consumer = new_cons;
 
                         let hw_card = format!("hw:{}", card_idx);
                         let mut controller = AlsaMixerController::new(&hw_card);
                         let _ = controller.configure_rec_out(&prof, self.config.audio.djm_mic.include_in_master);
                         let _ = controller.set_capture_pad(&prof, headroom_guard.current_pad());
 
-                        silence_gate.set_state(RecordingState::ArmedSilent);
                         let cap_alive = Arc::new(AtomicBool::new(true));
-                        capture_thread_alive = cap_alive.clone();
+                        let cap_alive_spawn = cap_alive.clone();
                         let engine_running = self.running.clone();
                         let cap_prof = prof.clone();
-
                         let hw_dev = format!("hw:{},0", card_idx);
-                        push_event(
-                            &mut recent_events,
-                            format!(
-                                "Connected {} on {} ({} Hz, {}ch REC OUT {:?}, Pad {} dB)",
-                                prof.name, hw_dev, prof.native_sample_rate, prof.total_channels, prof.rec_out_channels, headroom_guard.current_pad()
-                            ),
-                        );
+                        let hw_dev_spawn = hw_dev.clone();
 
-                        std::thread::Builder::new()
+                        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+
+                        let spawn_res = std::thread::Builder::new()
                             .name("djm-alsa-capture".to_string())
                             .spawn(move || {
-                                let cap = AlsaCapture::new(cap_prof.clone(), &hw_dev, engine_running.clone());
-                                if let Err(e) = cap.run_capture_loop(new_prod) {
-                                    warn!("ALSA capture on {} exited: {}", hw_dev, e);
+                                let cap = AlsaCapture::new(cap_prof.clone(), &hw_dev_spawn, engine_running.clone());
+                                if let Err(e) = cap.run_capture_loop(new_prod, Some(ready_tx)) {
+                                    warn!("ALSA capture on {} exited: {}", hw_dev_spawn, e);
                                 }
-                                cap_alive.store(false, Ordering::Relaxed);
-                            })?;
+                                cap_alive_spawn.store(false, Ordering::Relaxed);
+                            });
 
-                        active_card_idx = Some(card_idx);
-                        active_mixer_profile = Some(prof);
+                        match spawn_res {
+                            Ok(_) => {
+                                match ready_rx.recv_timeout(Duration::from_secs(3)) {
+                                    Ok(Ok(())) => {
+                                        consumer = new_cons;
+                                        capture_thread_alive = cap_alive;
+                                        silence_gate.set_state(RecordingState::ArmedSilent);
+                                        push_event(
+                                            &mut recent_events,
+                                            format!(
+                                                "Connected {} on {} ({} Hz, {}ch REC OUT {:?}, Pad {} dB)",
+                                                prof.name, hw_dev, prof.native_sample_rate, prof.total_channels, prof.rec_out_channels, headroom_guard.current_pad()
+                                            ),
+                                        );
+                                        active_card_idx = Some(card_idx);
+                                        active_mixer_profile = Some(prof);
+                                    }
+                                    Ok(Err(err_msg)) => {
+                                        warn!("Failed to initialize audio capture on {}: {}", hw_dev, err_msg);
+                                        push_event(
+                                            &mut recent_events,
+                                            format!("Failed to connect {}: {}", prof.name, err_msg),
+                                        );
+                                    }
+                                    Err(_) => {
+                                        warn!("Timed out waiting for audio capture on {}", hw_dev);
+                                        push_event(
+                                            &mut recent_events,
+                                            format!("Connection timeout for {} on {}", prof.name, hw_dev),
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Failed to spawn capture thread for {}: {}", hw_dev, e);
+                            }
+                        }
                     }
                 }
             }
