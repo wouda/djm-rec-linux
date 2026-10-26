@@ -100,36 +100,29 @@ jobs:
           flutter create --platforms=android --org com.craterdnb --project-name djm_companion .
           rm -f test/widget_test.dart
           python3 -c '
+          import os
           manifest = "android/app/src/main/AndroidManifest.xml"
-          with open(manifest, "r") as f:
-              content = f.read()
-
-          permissions = """
-              <uses-permission android:name="android.permission.INTERNET" />
-              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-              <uses-permission android:name="android.permission.VIBRATE" />
-              <uses-permission android:name="android.permission.CAMERA" />
-              <uses-feature android:name="android.hardware.camera" android:required="false" />
-              <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-              <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
-              <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
-              <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-              <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
-          """
-
-          content = content.replace("<application", permissions + "\n    <application")
-          with open(manifest, "w") as f:
-              f.write(content)
-
-          gradle_file = "android/app/build.gradle"
-          with open(gradle_file, "r") as f:
-              g = f.read()
-          g = g.replace("minSdkVersion flutter.minSdkVersion", "minSdkVersion 24")
-          with open(gradle_file, "w") as f:
-              f.write(g)
+          if os.path.exists(manifest):
+              with open(manifest, "r") as f:
+                  content = f.read()
+              if "android.permission.BLUETOOTH_SCAN" not in content:
+                  permissions = """
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+"""
+                  content = content.replace("<application", permissions + "\n    <application")
+                  with open(manifest, "w") as f:
+                      f.write(content)
           '
-          yes | flutter doctor --android-licenses || true
           flutter pub get
           flutter test
 
@@ -139,7 +132,13 @@ jobs:
           flutter build apk --release
           TAG_NAME="${GITHUB_REF_NAME:-v0.2.1}"
           APK_NAME="djm-box-companion-${TAG_NAME}.apk"
-          cp build/app/outputs/flutter-apk/app-release.apk "../${APK_NAME}"
+          APK_PATH=$(find build -name "*.apk" -type f | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "Error: No APK file found in build directory!"
+            exit 1
+          fi
+          echo "Found APK at $APK_PATH"
+          cp "$APK_PATH" "../${APK_NAME}"
           cd ..
           sha256sum "${APK_NAME}" > "${APK_NAME}.sha256"
 
