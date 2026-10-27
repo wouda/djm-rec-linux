@@ -111,20 +111,9 @@ jobs:
           BUILD_STATUS=${PIPESTATUS[0]}
           if [ $BUILD_STATUS -ne 0 ]; then
             echo "::error::Flutter build failed with exit code $BUILD_STATUS"
-            echo "### Flutter Build Failure Log" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            tail -n 120 /tmp/flutter_build.log >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            ERR=$(grep -A 8 -E '^\* What went wrong:' /tmp/flutter_build.log | head -n 6)
-            if [ -z "$ERR" ]; then
-              ERR=$(grep -C 2 -E 'FAILURE: Build failed|Execution failed for task' /tmp/flutter_build.log | head -n 6)
-            fi
-            if [ -z "$ERR" ]; then
-              ERR=$(tail -n 6 /tmp/flutter_build.log)
-            fi
-            echo "$ERR" | while IFS= read -r line; do
-              echo "::error::$line"
-            done
+            echo "==================== FULL FLUTTER BUILD FAILURE LOG ===================="
+            cat /tmp/flutter_build.log
+            echo "========================================================================"
             exit 1
           fi
           set -e
