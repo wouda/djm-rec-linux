@@ -96,7 +96,6 @@ jobs:
       - name: Configure Flutter project & run tests
         working-directory: flutter_app
         run: |
-          rm -rf android
           flutter create --platforms=android --org com.craterdnb --project-name djm_companion .
           rm -f test/widget_test.dart
           python3 inject_permissions.py
