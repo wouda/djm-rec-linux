@@ -40,7 +40,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
 
     try {
-      await player.play(UrlSource(streamUrl));
+      await player.play(UrlSource(streamUrl, mimeType: 'audio/flac'));
       HapticFeedback.mediumImpact();
 
       _audioTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -58,6 +58,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _stopAudio();
       });
     } catch (e) {
+      if (_audioPlayer != player) return;
       debugPrint("Test audio stream playback failed: $e");
       _stopAudio();
       if (mounted) {
@@ -77,7 +78,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
 
     try {
-      await player.play(UrlSource(streamUrl));
+      await player.play(UrlSource(streamUrl, mimeType: 'audio/mpeg'));
       HapticFeedback.mediumImpact();
 
       _audioTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -87,6 +88,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         });
       });
     } catch (e) {
+      if (_audioPlayer != player) return;
       debugPrint("Live stream playback failed: $e");
       _stopAudio();
       if (mounted) {
@@ -98,9 +100,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void _stopAudio() {
     _audioTimer?.cancel();
     _audioTimer = null;
-    _audioPlayer?.stop();
-    _audioPlayer?.dispose();
+    final p = _audioPlayer;
     _audioPlayer = null;
+    p?.stop();
+    p?.dispose();
 
     if (mounted && _activeAudioMode != null) {
       setState(() {
@@ -207,7 +210,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 border: Border.all(color: const Color(0xFF232A3B)),
               ),
               child: const Text(
-                "v0.2.5",
+                "v0.2.6",
                 style: TextStyle(
                   color: Color(0xFF94A3B8),
                   fontSize: 10,

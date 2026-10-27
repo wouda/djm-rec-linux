@@ -1,7 +1,7 @@
 name: djm_companion
 description: "Cross-platform mobile companion monitor for djm-rec-linux Pioneer recording appliance."
 publish_to: "none"
-version: 0.2.5+7
+version: 0.2.6+8
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

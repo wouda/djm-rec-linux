@@ -64,7 +64,9 @@ impl WebServer {
             .route("/api/status", get(handle_api_status))
             .route("/api/command", post(handle_api_command))
             .route("/api/audio/test-stream", get(handle_audio_test_stream))
+            .route("/api/audio/test-stream.flac", get(handle_audio_test_stream))
             .route("/api/audio/live-stream", get(handle_audio_live_stream))
+            .route("/api/audio/live-stream.mp3", get(handle_audio_live_stream))
             .layer(CorsLayer::permissive())
             .with_state(state)
     }
@@ -134,16 +136,23 @@ async fn handle_audio_test_stream(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    // Spawn ffmpeg to read the last 15 seconds from the active FLAC file and pipe out 24-bit FLAC
+    // Determine start offset: last 15 seconds if active_file_duration_secs > 15
+    let start_sec = t.active_file_duration_secs.saturating_sub(15);
+
     let mut cmd = tokio::process::Command::new("ffmpeg");
     cmd.kill_on_drop(true);
+
+    if start_sec > 0 {
+        cmd.arg("-ss").arg(start_sec.to_string());
+    }
+
     cmd.args([
-        "-sseof",
-        "-15",
         "-i",
         filepath.to_str().unwrap_or(""),
         "-t",
         "15",
+        "-af",
+        "asetnsamples=4096",
         "-c:a",
         "flac",
         "-f",
@@ -151,19 +160,29 @@ async fn handle_audio_test_stream(
         "-",
     ])
     .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::null());
+    .stderr(std::process::Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let stdout = child.stdout.take().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let output = cmd.output().await.map_err(|e| {
+        tracing::error!("Failed to spawn ffmpeg for test-stream: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
-    let stream = tokio_util::io::ReaderStream::new(stdout);
-    let body = axum::body::Body::from_stream(stream);
+    if !output.status.success() || output.stdout.is_empty() {
+        tracing::error!(
+            "ffmpeg test-stream failed (exit {:?}): {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
 
     Response::builder()
         .status(StatusCode::OK)
         .header(axum::http::header::CONTENT_TYPE, "audio/flac")
+        .header(axum::http::header::CONTENT_LENGTH, output.stdout.len().to_string())
         .header(axum::http::header::CACHE_CONTROL, "no-cache, no-store")
-        .body(body)
+        .header(axum::http::header::ACCEPT_RANGES, "bytes")
+        .body(axum::body::Body::from(output.stdout))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
@@ -194,12 +213,20 @@ async fn handle_audio_live_stream(
     // Follow the active file and stream continuous 192kbps MP3
     let mut cmd = tokio::process::Command::new("ffmpeg");
     cmd.kill_on_drop(true);
+
+    cmd.arg("-follow").arg("1");
+    // If recording duration is already past 2 seconds, seek near the live edge
+    if t.active_file_duration_secs > 2 {
+        let live_start = t.active_file_duration_secs.saturating_sub(2);
+        cmd.arg("-ss").arg(live_start.to_string());
+    }
+
     cmd.args([
-        "-follow",
-        "1",
         "-re",
         "-i",
         filepath.to_str().unwrap_or(""),
+        "-ar",
+        "48000",
         "-c:a",
         "libmp3lame",
         "-b:a",
@@ -211,7 +238,10 @@ async fn handle_audio_live_stream(
     .stdout(std::process::Stdio::piped())
     .stderr(std::process::Stdio::null());
 
-    let mut child = cmd.spawn().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut child = cmd.spawn().map_err(|e| {
+        tracing::error!("Failed to spawn ffmpeg for live-stream: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     let stdout = child.stdout.take().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let stream = tokio_util::io::ReaderStream::new(stdout);
@@ -220,7 +250,9 @@ async fn handle_audio_live_stream(
     Response::builder()
         .status(StatusCode::OK)
         .header(axum::http::header::CONTENT_TYPE, "audio/mpeg")
-        .header(axum::http::header::CACHE_CONTROL, "no-cache, no-store")
+        .header(axum::http::header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")
+        .header(axum::http::header::PRAGMA, "no-cache")
+        .header("ice-audio-info", "ice-samplerate=48000;ice-bitrate=192;ice-channels=2")
         .body(body)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
@@ -360,7 +392,7 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
   <div class="card header">
     <div>
       <h2 style="font-size: 1.25rem; letter-spacing: -0.5px; display: flex; align-items: center; gap: 8px;">
-        djm-box remote <span style="font-size: 0.75rem; background: #1e2638; border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: #94a3b8;">v0.2.5</span>
+        djm-box remote <span style="font-size: 0.75rem; background: #1e2638; border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: #94a3b8;">v0.2.6</span>
       </h2>
       <div id="mixerModel" class="mixer-info" style="margin-top: 4px;">Connecting to daemon...</div>
     </div>
@@ -841,5 +873,137 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn test_audio_stream_endpoint_recording_flac_success() {
+        let tmp_dir = std::env::temp_dir();
+        let test_flac = tmp_dir.join("test_recording_active.flac");
+
+        // Generate a 20-second test FLAC file with ffmpeg if available
+        let status = std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:duration=20",
+                "-c:a",
+                "flac",
+                test_flac.to_str().unwrap(),
+            ])
+            .output();
+
+        if status.is_err() || !status.as_ref().unwrap().status.success() {
+            // Skip test if ffmpeg is unavailable in test environment
+            return;
+        }
+
+        let (_tel_tx, tel_rx) = watch::channel(Telemetry {
+            state: RecordingState::Recording,
+            active_filename: Some("test_recording_active.flac".to_string()),
+            active_file_duration_secs: 20,
+            ..Default::default()
+        });
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let running = Arc::new(AtomicBool::new(true));
+
+        let state = WebState {
+            auth_token: "secret123".to_string(),
+            recordings_dir: tmp_dir.clone(),
+            telemetry_rx: tel_rx,
+            command_tx: cmd_tx,
+            running,
+        };
+
+        let app = WebServer::create_router(state);
+
+        let req = Request::builder()
+            .uri("/api/audio/test-stream?token=secret123")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "audio/flac"
+        );
+        let content_length: usize = resp
+            .headers()
+            .get(axum::http::header::CONTENT_LENGTH)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(content_length > 1000);
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 10 * 1024 * 1024)
+            .await
+            .unwrap();
+        assert_eq!(body_bytes.len(), content_length);
+
+        let _ = std::fs::remove_file(test_flac);
+    }
+
+    #[tokio::test]
+    async fn test_audio_live_stream_endpoint_recording_mp3_success() {
+        let tmp_dir = std::env::temp_dir();
+        let test_flac = tmp_dir.join("test_recording_live.flac");
+
+        let status = std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:duration=5",
+                "-c:a",
+                "flac",
+                test_flac.to_str().unwrap(),
+            ])
+            .output();
+
+        if status.is_err() || !status.as_ref().unwrap().status.success() {
+            return;
+        }
+
+        let (_tel_tx, tel_rx) = watch::channel(Telemetry {
+            state: RecordingState::Recording,
+            active_filename: Some("test_recording_live.flac".to_string()),
+            active_file_duration_secs: 5,
+            ..Default::default()
+        });
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let running = Arc::new(AtomicBool::new(true));
+
+        let state = WebState {
+            auth_token: "secret123".to_string(),
+            recordings_dir: tmp_dir.clone(),
+            telemetry_rx: tel_rx,
+            command_tx: cmd_tx,
+            running,
+        };
+
+        let app = WebServer::create_router(state);
+
+        let req = Request::builder()
+            .uri("/api/audio/live-stream?token=secret123")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "audio/mpeg"
+        );
+
+        let _ = std::fs::remove_file(test_flac);
     }
 }

@@ -39,20 +39,46 @@ class TransportManager extends ChangeNotifier {
   bool get isConnected =>
       _activeTransport == ActiveTransport.wifi || _activeTransport == ActiveTransport.remote;
 
+  String get _resolvedHttpHost {
+    if (_discoveredHost != null &&
+        _discoveredHost != "djm-box.local" &&
+        !_discoveredHost!.endsWith('.local')) {
+      return _discoveredHost!;
+    }
+    if (_pairingInfo?.localIp != null && _pairingInfo!.localIp!.isNotEmpty) {
+      return _pairingInfo!.localIp!;
+    }
+    if (_discoveredHost != null && _discoveredHost!.isNotEmpty) {
+      return _discoveredHost!;
+    }
+    if (_pairingInfo?.host != null && _pairingInfo!.host.isNotEmpty) {
+      return _pairingInfo!.host;
+    }
+    return "10.42.0.1";
+  }
+
+  String get _resolvedHttpBase {
+    if (_activeTransport == ActiveTransport.remote &&
+        _pairingInfo?.remoteUrl != null &&
+        _pairingInfo!.remoteUrl!.isNotEmpty) {
+      final remote = _pairingInfo!.remoteUrl!;
+      return remote.startsWith('http') ? remote : 'https://$remote';
+    }
+    final host = _resolvedHttpHost;
+    final port = _pairingInfo?.port ?? 8080;
+    return "http://$host:$port";
+  }
+
   String get audioStreamUrl => testAudioStreamUrl;
 
   String get testAudioStreamUrl {
-    final host = _pairingInfo?.host ?? _discoveredHost ?? "10.42.0.1";
-    final port = _pairingInfo?.port ?? 8080;
     final token = _pairingInfo?.token ?? "";
-    return "http://$host:$port/api/audio/test-stream?token=${Uri.encodeComponent(token)}";
+    return "$_resolvedHttpBase/api/audio/test-stream?token=${Uri.encodeComponent(token)}";
   }
 
   String get liveAudioStreamUrl {
-    final host = _pairingInfo?.host ?? _discoveredHost ?? "10.42.0.1";
-    final port = _pairingInfo?.port ?? 8080;
     final token = _pairingInfo?.token ?? "";
-    return "http://$host:$port/api/audio/live-stream?token=${Uri.encodeComponent(token)}";
+    return "$_resolvedHttpBase/api/audio/live-stream?token=${Uri.encodeComponent(token)}";
   }
 
   TransportManager() {

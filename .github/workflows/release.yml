@@ -52,7 +52,7 @@ jobs:
 
       - name: Package artifacts
         run: |
-          TAG_NAME="${GITHUB_REF_NAME:-v0.2.5}"
+          TAG_NAME="${GITHUB_REF_NAME:-v0.2.6}"
           PKG_DIR="djm-rec-linux-${TAG_NAME}-${{ matrix.arch }}"
           mkdir -p "$PKG_DIR/bin"
           
@@ -117,7 +117,7 @@ jobs:
             exit 1
           fi
           set -e
-          TAG_NAME="${GITHUB_REF_NAME:-v0.2.5}"
+          TAG_NAME="${GITHUB_REF_NAME:-v0.2.6}"
           APK_NAME="djm-box-companion-${TAG_NAME}.apk"
           APK_PATH=$(find build -name "*.apk" -type f | head -n 1)
           if [ -z "$APK_PATH" ]; then
