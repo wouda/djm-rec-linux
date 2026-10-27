@@ -1,5 +1,6 @@
 import os
 import re
+import glob
 
 # 1. Inject permissions and cleartext traffic into AndroidManifest.xml
 manifest = "android/app/src/main/AndroidManifest.xml"
@@ -54,10 +55,12 @@ if os.path.exists(gradle_props):
 
 props_lines = [
     line for line in props_lines
-    if not any(k in line for k in ["kotlin.jvm.target.validation.mode"])
+    if not any(k in line for k in ["kotlin.jvm.target.validation.mode", "android.useAndroidX", "android.enableJetifier"])
 ]
 props_lines.append("\n# Build compatibility flags\n")
 props_lines.append("kotlin.jvm.target.validation.mode=IGNORE\n")
+props_lines.append("android.useAndroidX=true\n")
+props_lines.append("android.enableJetifier=true\n")
 
 with open(gradle_props, "w") as f:
     f.writelines(props_lines)
@@ -84,14 +87,41 @@ for root in ndk_roots:
             installed_ndk = sorted(ndks)[-1]
             break
 
-# If on GitHub Actions and no NDK directory found, fallback to GitHub runner pre-installed NDK r27c
-if not installed_ndk and os.environ.get("GITHUB_ACTIONS"):
-    installed_ndk = "27.3.13750724"
-
 if installed_ndk:
     print(f"Detected pre-installed Android NDK: {installed_ndk}")
 
-# 5. Configure Groovy build.gradle if present
+# 5. Configure Groovy root android/build.gradle if present
+root_gradle = "android/build.gradle"
+if os.path.exists(root_gradle):
+    with open(root_gradle, "r") as f:
+        content = f.read()
+
+    subprojects_block = """
+subprojects {
+    afterEvaluate { project ->
+        if (project.hasProperty("android")) {
+            project.android {
+                compileOptions {
+                    sourceCompatibility JavaVersion.VERSION_17
+                    targetCompatibility JavaVersion.VERSION_17
+                }
+            }
+        }
+        tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+            kotlinOptions {
+                jvmTarget = "17"
+            }
+        }
+    }
+}
+"""
+    if "subprojects {" not in content:
+        content += "\n" + subprojects_block
+        with open(root_gradle, "w") as f:
+            f.write(content)
+        print("Successfully added Java 17 subprojects alignment to android/build.gradle")
+
+# 6. Configure Groovy android/app/build.gradle if present
 gradle_file = "android/app/build.gradle"
 if os.path.exists(gradle_file):
     with open(gradle_file, "r") as f:
@@ -103,7 +133,12 @@ if os.path.exists(gradle_file):
     elif "minSdkVersion" in content:
         content = re.sub(r'minSdkVersion\s+.*', 'minSdkVersion 24', content)
 
-    # Pin ndkVersion to pre-installed version so Gradle doesn't download 1.2GB NDK
+    # Align compileOptions and kotlinOptions to Java 17
+    content = re.sub(r'sourceCompatibility\s+JavaVersion\.\w+', 'sourceCompatibility JavaVersion.VERSION_17', content)
+    content = re.sub(r'targetCompatibility\s+JavaVersion\.\w+', 'targetCompatibility JavaVersion.VERSION_17', content)
+    content = re.sub(r'jvmTarget\s*=\s*[\'"][^\'"]+[\'"]', "jvmTarget = '17'", content)
+
+    # Pin ndkVersion if pre-installed
     if installed_ndk:
         if "ndkVersion" in content:
             content = re.sub(r'ndkVersion\s+.*', f'ndkVersion "{installed_ndk}"', content)
@@ -112,9 +147,9 @@ if os.path.exists(gradle_file):
 
     with open(gradle_file, "w") as f:
         f.write(content)
-    print(f"Successfully configured android/app/build.gradle (minSdkVersion 24, ndk: {installed_ndk})")
+    print(f"Successfully configured android/app/build.gradle (minSdkVersion 24, Java 17)")
 
-# 6. Configure Kotlin DSL build.gradle.kts if present
+# 7. Configure Kotlin DSL android/app/build.gradle.kts if present
 kts_file = "android/app/build.gradle.kts"
 if os.path.exists(kts_file):
     with open(kts_file, "r") as f:
@@ -126,7 +161,12 @@ if os.path.exists(kts_file):
     elif "minSdk" in content:
         content = re.sub(r'minSdk\s*=\s*.*', 'minSdk = 24', content)
 
-    # Pin ndkVersion to pre-installed version so Gradle doesn't download 1.2GB NDK
+    # Align compileOptions and kotlinOptions to Java 17
+    content = re.sub(r'sourceCompatibility\s*=\s*JavaVersion\.\w+', 'sourceCompatibility = JavaVersion.VERSION_17', content)
+    content = re.sub(r'targetCompatibility\s*=\s*JavaVersion\.\w+', 'targetCompatibility = JavaVersion.VERSION_17', content)
+    content = re.sub(r'jvmTarget\s*=\s*.*', 'jvmTarget = "17"', content)
+
+    # Pin ndkVersion if pre-installed
     if installed_ndk:
         if "ndkVersion" in content:
             content = re.sub(r'ndkVersion\s*=.*', f'ndkVersion = "{installed_ndk}"', content)
@@ -135,4 +175,26 @@ if os.path.exists(kts_file):
 
     with open(kts_file, "w") as f:
         f.write(content)
-    print(f"Successfully configured android/app/build.gradle.kts (minSdk = 24, ndk: {installed_ndk})")
+    print(f"Successfully configured android/app/build.gradle.kts (minSdk = 24, Java 17)")
+
+# 8. Patch plugin build.gradle in pub cache (e.g. audioplayers_android)
+cache_patterns = [
+    os.path.expanduser("~/.pub-cache/hosted/pub.dev/audioplayers_android-*/android/build.gradle"),
+    os.path.expanduser("~/.pub-cache/hosted/pub.dartlang.org/audioplayers_android-*/android/build.gradle"),
+]
+for pattern in cache_patterns:
+    for plugin_gradle in glob.glob(pattern):
+        try:
+            with open(plugin_gradle, "r") as f:
+                p_content = f.read()
+            original = p_content
+            # Align Java & Kotlin to Java 17
+            p_content = re.sub(r'sourceCompatibility\s+JavaVersion\.\w+', 'sourceCompatibility JavaVersion.VERSION_17', p_content)
+            p_content = re.sub(r'targetCompatibility\s+JavaVersion\.\w+', 'targetCompatibility JavaVersion.VERSION_17', p_content)
+            p_content = re.sub(r'jvmTarget\s*=\s*[\'"][^\'"]+[\'"]', "jvmTarget = '17'", p_content)
+            if p_content != original:
+                with open(plugin_gradle, "w") as f:
+                    f.write(p_content)
+                print(f"Successfully patched {plugin_gradle} for Java 17 compatibility")
+        except Exception as e:
+            print(f"Notice: could not patch {plugin_gradle}: {e}")

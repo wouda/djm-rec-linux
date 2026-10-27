@@ -99,8 +99,8 @@ jobs:
           rm -rf android
           flutter create --platforms=android --org com.craterdnb --project-name djm_companion .
           rm -f test/widget_test.dart
-          python3 inject_permissions.py
           flutter pub get
+          python3 inject_permissions.py
           flutter test
 
       - name: Build Release APK
@@ -111,7 +111,18 @@ jobs:
           BUILD_STATUS=${PIPESTATUS[0]}
           if [ $BUILD_STATUS -ne 0 ]; then
             echo "::error::Flutter build failed with exit code $BUILD_STATUS"
-            tail -n 60 /tmp/flutter_build.log | while IFS= read -r line; do
+            echo "### Flutter Build Failure Log" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -n 120 /tmp/flutter_build.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            ERR=$(grep -A 8 -E '^\* What went wrong:' /tmp/flutter_build.log | head -n 6)
+            if [ -z "$ERR" ]; then
+              ERR=$(grep -C 2 -E 'FAILURE: Build failed|Execution failed for task' /tmp/flutter_build.log | head -n 6)
+            fi
+            if [ -z "$ERR" ]; then
+              ERR=$(tail -n 6 /tmp/flutter_build.log)
+            fi
+            echo "$ERR" | while IFS= read -r line; do
               echo "::error::$line"
             done
             exit 1
