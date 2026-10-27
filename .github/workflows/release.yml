@@ -106,7 +106,7 @@ jobs:
       - name: Build Release APK
         working-directory: flutter_app
         run: |
-          flutter build apk --release
+          flutter build apk --release || { echo "::error::Flutter build failed. Retrying with verbose log:"; flutter build apk --release --verbose; exit 1; }
           TAG_NAME="${GITHUB_REF_NAME:-v0.2.4}"
           APK_NAME="djm-box-companion-${TAG_NAME}.apk"
           APK_PATH=$(find build -name "*.apk" -type f | head -n 1)
