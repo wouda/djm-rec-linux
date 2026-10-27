@@ -99,6 +99,7 @@ jobs:
           rm -rf android
           flutter create --platforms=android --org com.craterdnb --project-name djm_companion .
           rm -f test/widget_test.dart
+          yes | flutter doctor --android-licenses || true
           python3 inject_permissions.py
           flutter pub get
           flutter test

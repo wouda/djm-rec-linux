@@ -75,6 +75,9 @@ if os.path.exists(gradle_file):
     elif "minSdkVersion" in content:
         content = re.sub(r'minSdkVersion\s+.*', 'minSdkVersion 24', content)
 
+    # Remove ndkVersion so Gradle uses pre-installed runner NDK instead of downloading 1.2GB NDK
+    content = re.sub(r'ndkVersion\s+.*', '', content)
+
     with open(gradle_file, "w") as f:
         f.write(content)
     print("Successfully configured android/app/build.gradle with minSdkVersion 24")
@@ -85,11 +88,14 @@ if os.path.exists(kts_file):
     with open(kts_file, "r") as f:
         content = f.read()
 
-    # In Kotlin DSL, only change minSdk = flutter.minSdkVersion to minSdk = 24
+    # In Kotlin DSL, set minSdk = 24
     if "minSdk = flutter.minSdkVersion" in content:
         content = content.replace("minSdk = flutter.minSdkVersion", "minSdk = 24")
     elif "minSdk" in content:
         content = re.sub(r'minSdk\s*=\s*flutter\.minSdkVersion', 'minSdk = 24', content)
+
+    # Remove ndkVersion so Gradle uses pre-installed runner NDK instead of downloading 1.2GB NDK
+    content = re.sub(r'ndkVersion\s*=.*', '', content)
 
     with open(kts_file, "w") as f:
         f.write(content)
