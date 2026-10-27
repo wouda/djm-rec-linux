@@ -105,15 +105,31 @@ jobs:
 
       - name: Build Release APK
         working-directory: flutter_app
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
           flutter build apk --release 2>&1 | tee /tmp/flutter_build.log
           BUILD_STATUS=${PIPESTATUS[0]}
           if [ $BUILD_STATUS -ne 0 ]; then
             echo "::error::Flutter build failed with exit code $BUILD_STATUS"
-            echo "==================== FULL FLUTTER BUILD FAILURE LOG ===================="
-            cat /tmp/flutter_build.log
-            echo "========================================================================"
+            python3 -c '
+import os, urllib.request, json
+token = os.environ.get("GH_TOKEN", "")
+repo = os.environ.get("GITHUB_REPOSITORY", "wouda/djm-rec-linux")
+sha = os.environ.get("GITHUB_SHA", "")
+with open("/tmp/flutter_build.log") as f:
+    lines = f.readlines()
+log_tail = "".join(lines[-150:])
+body = f"### Flutter Build Failure Log\n```\n{log_tail}\n```"
+data = json.dumps({"body": body}).encode("utf-8")
+req = urllib.request.Request(f"https://api.github.com/repos/{repo}/commits/{sha}/comments", data=data, headers={"Authorization": f"token {token}", "User-Agent": "CI-Logger", "Content-Type": "application/json"})
+try:
+    urllib.request.urlopen(req)
+    print("Successfully posted failure log as commit comment")
+except Exception as e:
+    print(f"Failed to post commit comment: {e}")
+'
             exit 1
           fi
           set -e
