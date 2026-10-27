@@ -47,7 +47,25 @@ with open(props_file, "w") as f:
     f.writelines(props_lines)
 print("Successfully set SDK properties in android/local.properties")
 
-# 3. Configure Groovy build.gradle if present
+# 3. Configure android/gradle.properties to ignore JVM target mismatches
+gradle_props = "android/gradle.properties"
+props_lines = []
+if os.path.exists(gradle_props):
+    with open(gradle_props, "r") as f:
+        props_lines = f.readlines()
+
+props_lines = [
+    line for line in props_lines
+    if not any(k in line for k in ["kotlin.jvm.target.validation.mode"])
+]
+props_lines.append("\n# Suppress Kotlin JVM target mismatch warnings/errors across plugins\n")
+props_lines.append("kotlin.jvm.target.validation.mode=IGNORE\n")
+
+with open(gradle_props, "w") as f:
+    f.writelines(props_lines)
+print("Successfully set kotlin.jvm.target.validation.mode=IGNORE in android/gradle.properties")
+
+# 4. Configure Groovy build.gradle if present
 gradle_file = "android/app/build.gradle"
 if os.path.exists(gradle_file):
     with open(gradle_file, "r") as f:
@@ -58,11 +76,15 @@ if os.path.exists(gradle_file):
     content = re.sub(r'(targetSdk|targetSdkVersion)\s*=?\s*.*', 'targetSdkVersion 34', content)
     content = re.sub(r'(compileSdk|compileSdkVersion)\s*=?\s*.*', 'compileSdk 34', content)
 
+    # Align Java and Kotlin JVM targets with Java 17
+    content = re.sub(r'JavaVersion\.VERSION_1_[78]', 'JavaVersion.VERSION_17', content)
+    content = re.sub(r'jvmTarget\s*=\s*.*', "jvmTarget = '17'", content)
+
     with open(gradle_file, "w") as f:
         f.write(content)
-    print("Successfully configured android/app/build.gradle with SDK 34 / minSdk 24")
+    print("Successfully configured android/app/build.gradle with SDK 34 / minSdk 24 / Java 17")
 
-# 4. Configure Kotlin DSL build.gradle.kts if present
+# 5. Configure Kotlin DSL build.gradle.kts if present
 kts_file = "android/app/build.gradle.kts"
 if os.path.exists(kts_file):
     with open(kts_file, "r") as f:
@@ -72,6 +94,9 @@ if os.path.exists(kts_file):
     content = re.sub(r'(targetSdk|targetSdkVersion)\s*=?\s*.*', 'targetSdk = 34', content)
     content = re.sub(r'(compileSdk|compileSdkVersion)\s*=?\s*.*', 'compileSdk = 34', content)
 
+    content = re.sub(r'JavaVersion\.VERSION_1_[78]', 'JavaVersion.VERSION_17', content)
+    content = re.sub(r'jvmTarget\s*=\s*.*', 'jvmTarget = "17"', content)
+
     with open(kts_file, "w") as f:
         f.write(content)
-    print("Successfully configured android/app/build.gradle.kts with SDK 34 / minSdk 24")
+    print("Successfully configured android/app/build.gradle.kts with SDK 34 / minSdk 24 / Java 17")
