@@ -65,6 +65,9 @@ print("Successfully configured android/gradle.properties")
 
 # 4. Find pre-installed NDK if available
 ndk_roots = [
+    os.environ.get("ANDROID_NDK_ROOT", ""),
+    os.environ.get("ANDROID_NDK_HOME", ""),
+    os.environ.get("ANDROID_NDK", ""),
     os.environ.get("ANDROID_HOME", "") + "/ndk",
     os.environ.get("ANDROID_SDK_ROOT", "") + "/ndk",
     "/usr/local/lib/android/sdk/ndk",
@@ -73,10 +76,17 @@ ndk_roots = [
 installed_ndk = None
 for root in ndk_roots:
     if root and os.path.exists(root):
+        if os.path.exists(os.path.join(root, "source.properties")):
+            installed_ndk = os.path.basename(root.rstrip("/"))
+            break
         ndks = [d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))]
         if ndks:
             installed_ndk = sorted(ndks)[-1]
             break
+
+# If on GitHub Actions and no NDK directory found, fallback to GitHub runner pre-installed NDK r27c
+if not installed_ndk and os.environ.get("GITHUB_ACTIONS"):
+    installed_ndk = "27.3.13750724"
 
 if installed_ndk:
     print(f"Detected pre-installed Android NDK: {installed_ndk}")
@@ -95,11 +105,14 @@ if os.path.exists(gradle_file):
 
     # Pin ndkVersion to pre-installed version so Gradle doesn't download 1.2GB NDK
     if installed_ndk:
-        content = re.sub(r'ndkVersion\s+.*', f'ndkVersion "{installed_ndk}"', content)
+        if "ndkVersion" in content:
+            content = re.sub(r'ndkVersion\s+.*', f'ndkVersion "{installed_ndk}"', content)
+        else:
+            content = re.sub(r'(android\s*\{)', f'\\1\n    ndkVersion "{installed_ndk}"', content)
 
     with open(gradle_file, "w") as f:
         f.write(content)
-    print("Successfully configured android/app/build.gradle with minSdkVersion 24")
+    print(f"Successfully configured android/app/build.gradle (minSdkVersion 24, ndk: {installed_ndk})")
 
 # 6. Configure Kotlin DSL build.gradle.kts if present
 kts_file = "android/app/build.gradle.kts"
@@ -111,12 +124,15 @@ if os.path.exists(kts_file):
     if "minSdk = flutter.minSdkVersion" in content:
         content = content.replace("minSdk = flutter.minSdkVersion", "minSdk = 24")
     elif "minSdk" in content:
-        content = re.sub(r'minSdk\s*=\s*flutter\.minSdkVersion', 'minSdk = 24', content)
+        content = re.sub(r'minSdk\s*=\s*.*', 'minSdk = 24', content)
 
     # Pin ndkVersion to pre-installed version so Gradle doesn't download 1.2GB NDK
     if installed_ndk:
-        content = re.sub(r'ndkVersion\s*=.*', f'ndkVersion = "{installed_ndk}"', content)
+        if "ndkVersion" in content:
+            content = re.sub(r'ndkVersion\s*=.*', f'ndkVersion = "{installed_ndk}"', content)
+        else:
+            content = re.sub(r'(android\s*\{)', f'\\1\n    ndkVersion = "{installed_ndk}"', content)
 
     with open(kts_file, "w") as f:
         f.write(content)
-    print("Successfully configured android/app/build.gradle.kts with minSdk = 24")
+    print(f"Successfully configured android/app/build.gradle.kts (minSdk = 24, ndk: {installed_ndk})")

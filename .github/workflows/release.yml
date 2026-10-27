@@ -96,11 +96,9 @@ jobs:
       - name: Configure Flutter project & run tests
         working-directory: flutter_app
         run: |
-          sudo chmod -R 777 $ANDROID_HOME 2>/dev/null || true
           rm -rf android
           flutter create --platforms=android --org com.craterdnb --project-name djm_companion .
           rm -f test/widget_test.dart
-          yes | flutter doctor --android-licenses || true
           python3 inject_permissions.py
           flutter pub get
           flutter test
