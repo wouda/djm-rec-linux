@@ -27,7 +27,10 @@ async fn main() -> anyhow::Result<()> {
         r.store(false, Ordering::Relaxed);
     });
 
-    let mock_mode = std::env::args().any(|arg| arg == "--mock");
+    let mock_mode = std::env::args().any(|arg| arg == "--mock")
+        || std::env::var("DJM_MOCK")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
     if mock_mode {
         info!("Running in --mock mode with simulated audio generator");
     }
