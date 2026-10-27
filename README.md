@@ -27,8 +27,10 @@ Designed for Linux (CachyOS / Arch Linux), `djm-rec-linux` transforms a laptop, 
 - **Dynamic Performance Power Profiles**: Switches the system to `performance` mode via `powerprofilesctl` when recording begins to prevent CPU frequency scaling latency/xruns, and reverts to `balanced` when idle.
 - **Power-Loss & Crash Resilience**: Staged `.flac.part` files, 2-second `fdatasync()`, 30-second `STREAMINFO` header checkpoints, and automatic boot-time repair guarantee playable audio even if the power cable is pulled mid-set.
 - **Fault-Isolated Multi-Process Architecture**: Audio capture (`djm-daemon`), terminal UI (`djm-tui`), and remote bridges (`djm-remote`) run in completely separate OS processes communicating over a non-blocking Unix Domain Socket. A crash or lag in the UI or network never drops a single audio frame.
-- **Multi-Transport Remote Monitoring**:
-  - **Local Web Dashboard (`http://<ip>:8080`)**: Clean dark-mode UI with dual stereo VU meters, file stats, and remote actions (Split, Bookmark, Lock -19dB).
+- **Multi-Transport Remote Monitoring & Bit-Perfect Verification**:
+  - **15-Second Lossless FLAC Audio Preview**: Tap "Test Audio (15s)" in the web or mobile app to stream a live 15-second snippet of the active 24-bit FLAC recording directly from disk without touching or risking the recording daemon.
+  - **Local Web Dashboard (`http://<ip>:8080`)**: Clean dark-mode UI with dual stereo VU meters, file stats, FLAC audio preview player with live countdown bar, and remote actions (Split, Bookmark, Lock -19dB).
+  - **Smart Wi-Fi Autodetection & Companion App**: Mobile companion app automatically discovers the booth hotspot (`10.42.0.1:8080`) and LAN mDNS (`djm-box.local:8080`) on launch, connects with a saved PIN or 1-tap PIN modal, and features an unmistakable offline layout that never confuses network disconnects with mixer hardware issues.
   - **Direct Local Wi-Fi Hotspot (`10.42.0.1`)**: Automatically starts a local NetworkManager Wi-Fi hotspot (`DJM-Box-Booth`) when no venue Wi-Fi/LAN is connected, giving phones full 60 FPS WebSocket telemetry directly in offline club booths.
   - **Two-Step QR Code & 6-Digit PIN Pairing**: Scan Step 1 with a phone camera to join the hotspot, and scan Step 2 to open the dashboard or companion app instantly.
 
@@ -83,9 +85,9 @@ Designed for Linux (CachyOS / Arch Linux), `djm-rec-linux` transforms a laptop, 
 
 Download the latest pre-compiled bundle from the **[GitHub Releases](https://github.com/wouda/djm-rec-linux/releases/latest)** page:
 
-- **Linux x86_64** (Laptops, Mini PCs, Desktops): [djm-rec-linux-v0.2.3-x86_64.tar.gz](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-rec-linux-v0.2.3-x86_64.tar.gz)
-- **Linux aarch64** (Raspberry Pi 4 / 5): [djm-rec-linux-v0.2.3-aarch64.tar.gz](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-rec-linux-v0.2.3-aarch64.tar.gz)
-- **Android Companion App**: [djm-box-companion-v0.2.3.apk](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-box-companion-v0.2.3.apk)
+- **Linux x86_64** (Laptops, Mini PCs, Desktops): [djm-rec-linux-v0.2.4-x86_64.tar.gz](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-rec-linux-v0.2.4-x86_64.tar.gz)
+- **Linux aarch64** (Raspberry Pi 4 / 5): [djm-rec-linux-v0.2.4-aarch64.tar.gz](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-rec-linux-v0.2.4-aarch64.tar.gz)
+- **Android Companion App**: [djm-box-companion-v0.2.4.apk](https://github.com/wouda/djm-rec-linux/releases/latest/download/djm-box-companion-v0.2.4.apk)
 
 ```bash
 # Extract and run setup
@@ -124,7 +126,7 @@ systemctl --user enable --now djm-box-daemon djm-box-remote
 djm-box status
 ```
 ```text
-=== djm-box v0.2.3 Appliance Status ===
+=== djm-box v0.2.4 Appliance Status ===
 Mixer Detection:  ✓ DETECTED (Pioneer DJM-900NXS2 @ 96000 Hz)
 Recording Status: ● ACTIVELY RECORDING TO DISK (File: Pioneer_DJM-900NXS2_2026-10-25_17-30-00_pt01.flac)
 Mic Routing:      REC OUT (Master + Mic captured via ALSA unmuted routing)

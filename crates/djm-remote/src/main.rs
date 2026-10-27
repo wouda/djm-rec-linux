@@ -55,6 +55,7 @@ async fn main() -> Result<()> {
         let web = WebServer::new(
             config.remote.web_bind_addr.clone(),
             config.remote.auth_token.clone(),
+            config.storage.resolved_output_dir(),
             telemetry_rx.clone(),
             command_tx.clone(),
             running.clone(),

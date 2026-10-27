@@ -5,10 +5,11 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use djm_common::protocol::{ControlCommand, Telemetry};
+use djm_common::protocol::{ControlCommand, RecordingState, Telemetry};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +20,7 @@ use tracing::info;
 #[derive(Clone)]
 pub struct WebState {
     pub auth_token: String,
+    pub recordings_dir: PathBuf,
     pub telemetry_rx: watch::Receiver<Telemetry>,
     pub command_tx: mpsc::Sender<ControlCommand>,
     pub running: Arc<AtomicBool>,
@@ -38,6 +40,7 @@ impl WebServer {
     pub fn new(
         bind_addr: String,
         auth_token: String,
+        recordings_dir: PathBuf,
         telemetry_rx: watch::Receiver<Telemetry>,
         command_tx: mpsc::Sender<ControlCommand>,
         running: Arc<AtomicBool>,
@@ -46,6 +49,7 @@ impl WebServer {
             bind_addr,
             state: WebState {
                 auth_token,
+                recordings_dir,
                 telemetry_rx,
                 command_tx,
                 running,
@@ -53,14 +57,20 @@ impl WebServer {
         }
     }
 
-    pub async fn run(&self) -> Result<()> {
-        let app = Router::new()
+    pub fn create_router(state: WebState) -> Router {
+        Router::new()
             .route("/", get(handle_dashboard_html))
             .route("/ws", get(handle_websocket_upgrade))
             .route("/api/status", get(handle_api_status))
             .route("/api/command", post(handle_api_command))
+            .route("/api/audio/test-stream", get(handle_audio_test_stream))
+            .route("/api/audio/live-stream", get(handle_audio_live_stream))
             .layer(CorsLayer::permissive())
-            .with_state(self.state.clone());
+            .with_state(state)
+    }
+
+    pub async fn run(&self) -> Result<()> {
+        let app = Self::create_router(self.state.clone());
 
         let addr: SocketAddr = self.bind_addr.parse()?;
         info!("Web Remote Dashboard listening at http://{}", addr);
@@ -98,6 +108,121 @@ async fn handle_api_command(
     }
     let _ = state.command_tx.send(cmd).await;
     Ok(StatusCode::OK)
+}
+
+async fn handle_audio_test_stream(
+    State(state): State<WebState>,
+    Query(query): Query<AuthQuery>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    if !is_authorized(&state.auth_token, query.token.as_deref(), &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let t = state.telemetry_rx.borrow().clone();
+    if t.state != RecordingState::Recording {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    let filename = match t.active_filename {
+        Some(ref f) if !f.is_empty() => f.clone(),
+        _ => return Err(StatusCode::CONFLICT),
+    };
+
+    let filepath = state.recordings_dir.join(&filename);
+    if !filepath.exists() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // Spawn ffmpeg to read the last 15 seconds from the active FLAC file and pipe out 24-bit FLAC
+    let mut cmd = tokio::process::Command::new("ffmpeg");
+    cmd.kill_on_drop(true);
+    cmd.args([
+        "-sseof",
+        "-15",
+        "-i",
+        filepath.to_str().unwrap_or(""),
+        "-t",
+        "15",
+        "-c:a",
+        "flac",
+        "-f",
+        "flac",
+        "-",
+    ])
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null());
+
+    let mut child = cmd.spawn().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let stdout = child.stdout.take().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let stream = tokio_util::io::ReaderStream::new(stdout);
+    let body = axum::body::Body::from_stream(stream);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, "audio/flac")
+        .header(axum::http::header::CACHE_CONTROL, "no-cache, no-store")
+        .body(body)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn handle_audio_live_stream(
+    State(state): State<WebState>,
+    Query(query): Query<AuthQuery>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    if !is_authorized(&state.auth_token, query.token.as_deref(), &headers) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let t = state.telemetry_rx.borrow().clone();
+    if t.state != RecordingState::Recording {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    let filename = match t.active_filename {
+        Some(ref f) if !f.is_empty() => f.clone(),
+        _ => return Err(StatusCode::CONFLICT),
+    };
+
+    let filepath = state.recordings_dir.join(&filename);
+    if !filepath.exists() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // Follow the active file and stream continuous 192kbps MP3
+    let mut cmd = tokio::process::Command::new("ffmpeg");
+    cmd.kill_on_drop(true);
+    cmd.args([
+        "-follow",
+        "1",
+        "-re",
+        "-i",
+        filepath.to_str().unwrap_or(""),
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        "192k",
+        "-f",
+        "mp3",
+        "-",
+    ])
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null());
+
+    let mut child = cmd.spawn().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let stdout = child.stdout.take().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let stream = tokio_util::io::ReaderStream::new(stdout);
+    let body = axum::body::Body::from_stream(stream);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, "audio/mpeg")
+        .header(axum::http::header::CACHE_CONTROL, "no-cache, no-store")
+        .body(body)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 async fn handle_websocket_upgrade(
@@ -182,7 +307,7 @@ fn is_authorized(expected: &str, query_token: Option<&str>, headers: &HeaderMap)
     false
 }
 
-const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
+const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
@@ -223,15 +348,19 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
   .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 6px; }
   button { background: #1e2638; color: #fff; border: 1px solid var(--border); padding: 14px; border-radius: 10px; font-weight: 700; font-size: 0.95rem; cursor: pointer; transition: all 0.1s; }
   button:active { transform: scale(0.97); background: var(--accent); color: #000; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-test { background: #16a34a; display: flex; align-items: center; justify-content: center; gap: 8px; font-weight: 700; }
+  .btn-test:disabled { opacity: 0.45; cursor: not-allowed; background: #1e2638; color: #94a3b8; }
   .clip-alert { display: none; background: var(--red); color: #fff; font-weight: 700; text-align: center; padding: 8px; border-radius: 8px; margin-top: 8px; }
   .alert-banner { display: none; background: #450a0a; border: 1px solid #ef4444; color: #fecaca; padding: 12px; border-radius: 8px; font-weight: 600; font-size: 0.9rem; text-align: center; }
+  .alert-banner.offline { background: #451a03; border-color: #f59e0b; color: #fef3c7; }
 </style>
 </head>
 <body>
   <div class="card header">
     <div>
       <h2 style="font-size: 1.25rem; letter-spacing: -0.5px; display: flex; align-items: center; gap: 8px;">
-        djm-box remote <span style="font-size: 0.75rem; background: #1e2638; border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: #94a3b8;">v0.2.3</span>
+        djm-box remote <span style="font-size: 0.75rem; background: #1e2638; border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: #94a3b8;">v0.2.4</span>
       </h2>
       <div id="mixerModel" class="mixer-info" style="margin-top: 4px;">Connecting to daemon...</div>
     </div>
@@ -239,6 +368,10 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
       <div id="mixerBadge" class="badge mixer-off">Checking Mixer...</div>
       <div id="recBadge" class="badge disconnected">Offline</div>
     </div>
+  </div>
+
+  <div id="serverOfflineBanner" class="alert-banner offline">
+    ⚠️ <strong>Appliance Disconnected</strong> &mdash; Reconnecting to djm-box on Wi-Fi...
   </div>
 
   <div id="mixerAlertBanner" class="alert-banner">
@@ -263,6 +396,27 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
       </div>
     </div>
     <div id="clipAlert" class="clip-alert">⚠️ DIGITAL CLIPPING DETECTED</div>
+  </div>
+
+  <!-- Dedicated Dual Audio Monitor Card: 15s Test (FLAC) & Continuous Live (MP3) -->
+  <div class="card" id="testAudioCard">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+      <span style="font-weight: 700; font-size: 0.9rem; display: flex; align-items: center; gap: 6px;">
+        🎧 Audio Monitor
+      </span>
+      <span id="testCountdownText" style="font-size: 0.8rem; font-weight: 700; color: var(--accent);">Ready</span>
+    </div>
+    <div id="testProgressBarContainer" style="display: none; background: #000; height: 6px; border-radius: 3px; overflow: hidden; margin-bottom: 10px; border: 1px solid var(--border);">
+      <div id="testProgressFill" style="background: var(--accent); height: 100%; width: 0%; transition: width 0.1s linear;"></div>
+    </div>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+      <button id="btnTestAudio" class="btn-test" onclick="toggleTestAudio()" disabled>
+        ▶ Test (15s FLAC)
+      </button>
+      <button id="btnLiveAudio" class="btn-test" style="background: #0284c7;" onclick="toggleLiveAudio()" disabled>
+        🔴 Live Stream (MP3)
+      </button>
+    </div>
   </div>
 
   <div class="card">
@@ -294,17 +448,153 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
   }
 
   let ws;
+  let audioEl = null;
+  let activeAudioMode = null;
+  let testCountdownTimer = null;
+  let liveTimer = null;
+  let liveSeconds = 0;
+  let isConnected = false;
+
   function connectWS() {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${proto}//${window.location.host}/ws?token=${token}`);
+    ws = new WebSocket(`${proto}//${window.location.host}/ws?token=${encodeURIComponent(token)}`);
     
+    ws.onopen = () => {
+      isConnected = true;
+      document.getElementById('serverOfflineBanner').style.display = 'none';
+      setButtonsEnabled(true);
+    };
+
     ws.onmessage = (e) => {
       const t = JSON.parse(e.data);
       updateUI(t);
     };
-    ws.onclose = () => { setTimeout(connectWS, 1500); };
+
+    ws.onclose = () => {
+      isConnected = false;
+      document.getElementById('serverOfflineBanner').style.display = 'block';
+      document.getElementById('recBadge').textContent = 'Offline';
+      document.getElementById('recBadge').className = 'badge disconnected';
+      setButtonsEnabled(false);
+      stopAudio();
+      setTimeout(connectWS, 1500);
+    };
   }
   connectWS();
+
+  function setButtonsEnabled(enabled) {
+    const buttons = document.querySelectorAll('.btn-grid button');
+    buttons.forEach(b => {
+      b.disabled = !enabled;
+      b.style.opacity = enabled ? '1' : '0.4';
+    });
+  }
+
+  function toggleTestAudio() {
+    if (activeAudioMode === 'test') {
+      stopAudio();
+      return;
+    }
+    stopAudio();
+
+    const btn = document.getElementById('btnTestAudio');
+    const fill = document.getElementById('testProgressFill');
+    const pContainer = document.getElementById('testProgressBarContainer');
+    const countText = document.getElementById('testCountdownText');
+
+    audioEl = new Audio(`/api/audio/test-stream?token=${encodeURIComponent(token)}`);
+    audioEl.play().catch(err => {
+      alert("Audio stream playback failed: " + err);
+      stopAudio();
+    });
+
+    activeAudioMode = 'test';
+    btn.textContent = "⏹ Stop (15s)";
+    btn.style.background = "#dc2626";
+    pContainer.style.display = "block";
+    fill.style.width = "0%";
+    countText.textContent = `Testing 24-bit FLAC... 15s`;
+
+    const startTs = Date.now();
+    testCountdownTimer = setInterval(() => {
+      const elapsed = (Date.now() - startTs) / 1000;
+      const left = Math.max(0, 15 - elapsed);
+      fill.style.width = `${Math.min(100, (elapsed / 15) * 100)}%`;
+      countText.textContent = `Testing 24-bit FLAC... ${Math.ceil(left)}s`;
+
+      if (left <= 0) {
+        stopAudio();
+      }
+    }, 100);
+
+    audioEl.onended = () => stopAudio();
+    audioEl.onerror = () => stopAudio();
+  }
+
+  function toggleLiveAudio() {
+    if (activeAudioMode === 'live') {
+      stopAudio();
+      return;
+    }
+    stopAudio();
+
+    const btn = document.getElementById('btnLiveAudio');
+    const countText = document.getElementById('testCountdownText');
+
+    audioEl = new Audio(`/api/audio/live-stream?token=${encodeURIComponent(token)}`);
+    audioEl.play().catch(err => {
+      alert("Live stream failed: " + err);
+      stopAudio();
+    });
+
+    activeAudioMode = 'live';
+    btn.textContent = "⏹ Stop Live";
+    btn.style.background = "#dc2626";
+    liveSeconds = 0;
+    countText.textContent = `🔴 LIVE (00:00)`;
+
+    liveTimer = setInterval(() => {
+      liveSeconds++;
+      const mm = String(Math.floor(liveSeconds / 60)).padStart(2, '0');
+      const ss = String(liveSeconds % 60).padStart(2, '0');
+      countText.textContent = `🔴 LIVE (${mm}:${ss})`;
+    }, 1000);
+
+    audioEl.onerror = () => stopAudio();
+  }
+
+  function stopAudio() {
+    if (testCountdownTimer) {
+      clearInterval(testCountdownTimer);
+      testCountdownTimer = null;
+    }
+    if (liveTimer) {
+      clearInterval(liveTimer);
+      liveTimer = null;
+    }
+    if (audioEl) {
+      audioEl.pause();
+      audioEl.src = "";
+      audioEl = null;
+    }
+    activeAudioMode = null;
+
+    const btnTest = document.getElementById('btnTestAudio');
+    const btnLive = document.getElementById('btnLiveAudio');
+    const pContainer = document.getElementById('testProgressBarContainer');
+    const countText = document.getElementById('testCountdownText');
+
+    if (btnTest) {
+      btnTest.textContent = "▶ Test (15s FLAC)";
+      btnTest.style.background = "#16a34a";
+    }
+    if (btnLive) {
+      btnLive.textContent = "🔴 Live Stream (MP3)";
+      btnLive.style.background = "#0284c7";
+    }
+    if (pContainer) pContainer.style.display = "none";
+    if (countText) countText.textContent = "Ready";
+  }
 
   function sendCmd(cmd) {
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -330,7 +620,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
       document.getElementById('mixerModel').textContent = 'Waiting for USB-B mixer connection...';
     }
 
-    // Mixer Badge & Banner
+    // Mixer Badge & Banner (only display mixer unplugged warning when server is connected)
     const mBadge = document.getElementById('mixerBadge');
     const mBanner = document.getElementById('mixerAlertBanner');
     if (isMixer) {
@@ -340,7 +630,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
     } else {
       mBadge.textContent = '✗ NO MIXER (Plug USB-B)';
       mBadge.className = 'badge mixer-off';
-      if (mBanner) mBanner.style.display = 'block';
+      if (mBanner) mBanner.style.display = isConnected ? 'block' : 'none';
     }
 
     // Recording Badge
@@ -357,6 +647,25 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
     } else {
       rBadge.textContent = '○ IDLE (Not Recording)';
       rBadge.className = 'badge disconnected';
+    }
+
+    // Audio monitor buttons disabled state if not actively recording
+    const btnTest = document.getElementById('btnTestAudio');
+    const btnLive = document.getElementById('btnLiveAudio');
+    const countText = document.getElementById('testCountdownText');
+    if (!activeAudioMode) {
+      const canPlay = t.state === 'Recording';
+      if (btnTest) {
+        btnTest.disabled = !canPlay;
+        btnTest.style.opacity = canPlay ? '1' : '0.45';
+      }
+      if (btnLive) {
+        btnLive.disabled = !canPlay;
+        btnLive.style.opacity = canPlay ? '1' : '0.45';
+      }
+      if (countText) {
+        countText.textContent = canPlay ? "Ready" : (t.state === 'ArmedSilent' ? 'Armed in RAM (> -65dB)' : 'Idle');
+      }
     }
 
     // VU Meters
@@ -409,11 +718,14 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
   }
 </script>
 </body>
-</html>"#;
+</html>"##;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
 
     #[test]
     fn test_auth_check_token_query_and_header() {
@@ -423,5 +735,111 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("authorization", "Bearer 849201".parse().unwrap());
         assert!(is_authorized("849201", None, &headers));
+    }
+
+    #[tokio::test]
+    async fn test_audio_stream_endpoint_unauthorized() {
+        let (_tel_tx, tel_rx) = watch::channel(Telemetry::default());
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let running = Arc::new(AtomicBool::new(true));
+
+        let state = WebState {
+            auth_token: "secret123".to_string(),
+            recordings_dir: PathBuf::from("/tmp"),
+            telemetry_rx: tel_rx,
+            command_tx: cmd_tx,
+            running,
+        };
+
+        let app = WebServer::create_router(state);
+
+        let req = Request::builder()
+            .uri("/api/audio/test-stream?token=wrong")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_audio_stream_endpoint_conflict_when_not_recording() {
+        let (_tel_tx, tel_rx) = watch::channel(Telemetry {
+            state: RecordingState::ArmedSilent,
+            ..Default::default()
+        });
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let running = Arc::new(AtomicBool::new(true));
+
+        let state = WebState {
+            auth_token: "secret123".to_string(),
+            recordings_dir: PathBuf::from("/tmp"),
+            telemetry_rx: tel_rx,
+            command_tx: cmd_tx,
+            running,
+        };
+
+        let app = WebServer::create_router(state);
+
+        let req = Request::builder()
+            .uri("/api/audio/test-stream?token=secret123")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn test_audio_live_stream_endpoint_unauthorized() {
+        let (_tel_tx, tel_rx) = watch::channel(Telemetry::default());
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let running = Arc::new(AtomicBool::new(true));
+
+        let state = WebState {
+            auth_token: "secret123".to_string(),
+            recordings_dir: PathBuf::from("/tmp"),
+            telemetry_rx: tel_rx,
+            command_tx: cmd_tx,
+            running,
+        };
+
+        let app = WebServer::create_router(state);
+
+        let req = Request::builder()
+            .uri("/api/audio/live-stream?token=wrong")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_audio_live_stream_endpoint_conflict_when_not_recording() {
+        let (_tel_tx, tel_rx) = watch::channel(Telemetry {
+            state: RecordingState::ArmedSilent,
+            ..Default::default()
+        });
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let running = Arc::new(AtomicBool::new(true));
+
+        let state = WebState {
+            auth_token: "secret123".to_string(),
+            recordings_dir: PathBuf::from("/tmp"),
+            telemetry_rx: tel_rx,
+            command_tx: cmd_tx,
+            running,
+        };
+
+        let app = WebServer::create_router(state);
+
+        let req = Request::builder()
+            .uri("/api/audio/live-stream?token=secret123")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
     }
 }

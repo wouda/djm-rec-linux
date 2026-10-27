@@ -139,5 +139,13 @@ void main() {
       expect(info.hotspotPassword, "secret123");
       expect(info.host, "10.42.0.1");
     });
+
+    test('Constructs audio stream preview URL accurately', () {
+      final info = PairingInfo(host: "10.42.0.1", port: 8080, token: "123456");
+      final testUrl = "http://${info.host}:${info.port}/api/audio/test-stream?token=${Uri.encodeComponent(info.token)}";
+      final liveUrl = "http://${info.host}:${info.port}/api/audio/live-stream?token=${Uri.encodeComponent(info.token)}";
+      expect(testUrl, "http://10.42.0.1:8080/api/audio/test-stream?token=123456");
+      expect(liveUrl, "http://10.42.0.1:8080/api/audio/live-stream?token=123456");
+    });
   });
 }
