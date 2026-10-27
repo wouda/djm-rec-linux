@@ -151,7 +151,7 @@ class _PairingScreenState extends State<PairingScreen> {
                     decoration: InputDecoration(
                       labelText: "6-Digit PIN or Auth Token",
                       labelStyle: const TextStyle(color: Color(0xFF94A3B8)),
-                      hintText: "Shown via 'djm-box pair' or [P] in TUI",
+                      hintText: "Shown via 'djm-box pair' or [P] in TUI (default: 125555)",
                       hintStyle: const TextStyle(color: Color(0xFF64748B), fontSize: 12),
                       filled: true,
                       fillColor: const Color(0xFF131722),
@@ -162,6 +162,78 @@ class _PairingScreenState extends State<PairingScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        "Local Appliance Address",
+                        style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                      TextButton.icon(
+                        icon: context.watch<TransportManager>().isScanningSubnet
+                            ? const SizedBox(
+                                width: 12,
+                                height: 12,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00F0FF)),
+                              )
+                            : const Icon(Icons.network_check, size: 14, color: Color(0xFF00F0FF)),
+                        label: Text(
+                          context.watch<TransportManager>().isScanningSubnet ? "Scanning..." : "Scan Subnet",
+                          style: const TextStyle(color: Color(0xFF00F0FF), fontSize: 12),
+                        ),
+                        onPressed: context.watch<TransportManager>().isScanningSubnet
+                            ? null
+                            : () async {
+                                final manager = context.read<TransportManager>();
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text("Scanning local Wi-Fi subnet for djm-box..."),
+                                    duration: Duration(seconds: 1),
+                                  ),
+                                );
+                                final found = await manager.scanSubnet();
+                                if (found.isNotEmpty) {
+                                  setState(() {
+                                    _hostController.text = found.first;
+                                  });
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(content: Text("Found ${found.length} appliance(s). Selected ${found.first}")),
+                                    );
+                                  }
+                                } else {
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(content: Text("No appliances responded on the local subnet")),
+                                    );
+                                  }
+                                }
+                              },
+                      ),
+                    ],
+                  ),
+                  if (context.watch<TransportManager>().discoveredAppliances.isNotEmpty) ...[
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: context.watch<TransportManager>().discoveredAppliances.map((ip) {
+                        final isSelected = ip == _hostController.text;
+                        return ChoiceChip(
+                          label: Text(ip, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                          selected: isSelected,
+                          selectedColor: const Color(0xFF00F0FF),
+                          backgroundColor: const Color(0xFF131722),
+                          labelStyle: TextStyle(color: isSelected ? Colors.black : const Color(0xFFE2E8F0)),
+                          onSelected: (_) {
+                            setState(() {
+                              _hostController.text = ip;
+                            });
+                          },
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
                   TextField(
                     controller: _hostController,
                     style: const TextStyle(color: Colors.white, fontFamily: "monospace"),

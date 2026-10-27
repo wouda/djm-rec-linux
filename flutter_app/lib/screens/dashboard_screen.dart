@@ -147,7 +147,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               decoration: const InputDecoration(
                 filled: true,
                 fillColor: Color(0xFF0A0D14),
-                hintText: "123456",
+                hintText: "125555",
                 hintStyle: TextStyle(color: Color(0xFF475569)),
                 border: OutlineInputBorder(),
               ),
@@ -470,6 +470,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildDisconnectedHeroCard(BuildContext context, TransportManager transport) {
     final discovered = transport.discoveredHost;
     final isConnecting = transport.activeTransport == ActiveTransport.connecting;
+    final isScanning = transport.isScanningSubnet;
+    final appliances = transport.discoveredAppliances;
+
+    String subtitleText;
+    if (isScanning) {
+      subtitleText = "Scanning local Wi-Fi subnet (/24) for djm-box on port 8080...";
+    } else if (discovered != null) {
+      subtitleText = "Discovered djm-box at $discovered! Tap below to connect.";
+    } else {
+      subtitleText = "Searching booth hotspot (10.42.0.1) & local LAN (djm-box.local)...";
+    }
 
     return Container(
       padding: const EdgeInsets.all(14),
@@ -501,22 +512,49 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                 ),
               ),
+              if (isScanning)
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFFCD34D)),
+                  ),
+                ),
             ],
           ),
           const SizedBox(height: 6),
           Text(
-            discovered != null
-                ? "Discovered djm-box at $discovered! Tap below to connect."
-                : "Searching booth hotspot (10.42.0.1) & local LAN (djm-box.local)...",
+            subtitleText,
             style: const TextStyle(
               color: Color(0xFFFDE68A),
               fontSize: 12,
             ),
           ),
+          if (appliances.length > 1) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: appliances.map((ip) {
+                final isSelected = ip == discovered;
+                return ChoiceChip(
+                  label: Text(ip, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                  selected: isSelected,
+                  selectedColor: const Color(0xFFF59E0B),
+                  backgroundColor: const Color(0xFF1E2638),
+                  labelStyle: TextStyle(color: isSelected ? Colors.black : const Color(0xFFFEF3C7)),
+                  onSelected: (_) => transport.selectDiscoveredAppliance(ip),
+                );
+              }).toList(),
+            ),
+          ],
           const SizedBox(height: 10),
-          Row(
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
             children: [
-              if (discovered != null) ...[
+              if (discovered != null)
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFFF59E0B),
@@ -525,11 +563,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     elevation: 0,
                   ),
                   icon: const Icon(Icons.pin, size: 16),
-                  label: const Text("Enter PIN to Connect", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                  label: Text("Connect ($discovered)", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
                   onPressed: () => _showPinDialog(context, transport),
                 ),
-                const SizedBox(width: 8),
-              ],
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFFFEF3C7),
+                  side: const BorderSide(color: Color(0xFFF59E0B)),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                ),
+                icon: isScanning
+                    ? const SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFFEF3C7))),
+                      )
+                    : const Icon(Icons.network_check, size: 16),
+                label: Text(isScanning ? "Scanning..." : "Scan Subnet", style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                onPressed: isScanning
+                    ? null
+                    : () {
+                        _showSnackbar(context, "Scanning local Wi-Fi subnet for djm-box...");
+                        transport.triggerManualSubnetScan();
+                      },
+              ),
               OutlinedButton.icon(
                 style: OutlinedButton.styleFrom(
                   foregroundColor: const Color(0xFFFEF3C7),

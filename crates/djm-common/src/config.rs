@@ -217,7 +217,7 @@ pub fn generate_random_wpa2_password() -> String {
         .collect()
 }
 fn default_auth_token() -> String {
-    "123456".to_string()
+    "125555".to_string()
 }
 
 impl Default for RemoteConfig {

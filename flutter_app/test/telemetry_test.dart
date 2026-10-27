@@ -145,12 +145,25 @@ void main() {
       expect(info.host, "10.42.0.1");
     });
 
-    test('Constructs audio stream preview URL accurately', () {
-      final info = PairingInfo(host: "10.42.0.1", port: 8080, token: "123456");
+    test('Constructs audio stream preview URL accurately with 125555 PIN', () {
+      final info = PairingInfo(host: "10.42.0.1", port: 8080, token: "125555");
       final testUrl = "http://${info.host}:${info.port}/api/audio/test-stream?token=${Uri.encodeComponent(info.token)}";
       final liveUrl = "http://${info.host}:${info.port}/api/audio/live-stream?token=${Uri.encodeComponent(info.token)}";
-      expect(testUrl, "http://10.42.0.1:8080/api/audio/test-stream?token=123456");
-      expect(liveUrl, "http://10.42.0.1:8080/api/audio/live-stream?token=123456");
+      expect(testUrl, "http://10.42.0.1:8080/api/audio/test-stream?token=125555");
+      expect(liveUrl, "http://10.42.0.1:8080/api/audio/live-stream?token=125555");
+    });
+
+    test('Derives /24 subnet candidate addresses accurately', () {
+      const sampleIp = "192.168.86.42";
+      final lastDot = sampleIp.lastIndexOf('.');
+      expect(lastDot, isNot(-1));
+      final prefix = sampleIp.substring(0, lastDot + 1);
+      expect(prefix, "192.168.86.");
+
+      final ips = List.generate(254, (i) => "$prefix${i + 1}");
+      expect(ips.length, 254);
+      expect(ips.first, "192.168.86.1");
+      expect(ips.last, "192.168.86.254");
     });
   });
 }

@@ -21,6 +21,8 @@ class TransportManager extends ChangeNotifier {
   Telemetry _telemetry = const Telemetry();
   PairingInfo? _pairingInfo;
   String? _discoveredHost;
+  bool _isScanningSubnet = false;
+  List<String> _discoveredAppliances = [];
 
   WebSocketChannel? _wsChannel;
   StreamSubscription? _wsSubscription;
@@ -32,6 +34,8 @@ class TransportManager extends ChangeNotifier {
   Telemetry get telemetry => _telemetry;
   PairingInfo? get pairingInfo => _pairingInfo;
   String? get discoveredHost => _discoveredHost;
+  bool get isScanningSubnet => _isScanningSubnet;
+  List<String> get discoveredAppliances => List.unmodifiable(_discoveredAppliances);
   bool get isConnected =>
       _activeTransport == ActiveTransport.wifi || _activeTransport == ActiveTransport.remote;
 
@@ -81,8 +85,8 @@ class TransportManager extends ChangeNotifier {
     startAutoConnect();
   }
 
-  Future<void> connectWithDiscoveredHost(String token) async {
-    final host = _discoveredHost ?? "10.42.0.1";
+  Future<void> connectWithDiscoveredHost(String token, [String? hostOverride]) async {
+    final host = hostOverride ?? _discoveredHost ?? "10.42.0.1";
     final info = PairingInfo(
       host: host,
       port: 8080,
@@ -93,10 +97,16 @@ class TransportManager extends ChangeNotifier {
     await savePairing(info);
   }
 
+  void selectDiscoveredAppliance(String host) {
+    _discoveredHost = host;
+    notifyListeners();
+  }
+
   Future<void> clearPairing() async {
     disconnect();
     _pairingInfo = null;
     _discoveredHost = null;
+    _discoveredAppliances = [];
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('djm_pairing_info');
     _telemetry = const Telemetry();
@@ -106,6 +116,85 @@ class TransportManager extends ChangeNotifier {
   void startAutoConnect() {
     _reconnectTimer?.cancel();
     _connectPriorityChain();
+  }
+
+  Future<List<String>> findLocalSubnetPrefixes() async {
+    final prefixes = <String>[];
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+      for (final iface in interfaces) {
+        for (final addr in iface.addresses) {
+          final ip = addr.address;
+          if (ip.startsWith("127.") || ip.startsWith("169.254.")) continue;
+          final lastDot = ip.lastIndexOf('.');
+          if (lastDot != -1) {
+            final prefix = ip.substring(0, lastDot + 1);
+            if (!prefixes.contains(prefix)) {
+              prefixes.add(prefix);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint("Error resolving network interfaces: $e");
+    }
+    return prefixes;
+  }
+
+  Future<List<String>> scanSubnet({int batchSize = 25}) async {
+    if (_isScanningSubnet || _isDisposed) return _discoveredAppliances;
+    _isScanningSubnet = true;
+    notifyListeners();
+
+    final prefixes = await findLocalSubnetPrefixes();
+    if (prefixes.isEmpty) {
+      prefixes.add("192.168.1.");
+    }
+
+    final found = <String>[];
+    final port = _pairingInfo?.port ?? 8080;
+
+    for (final prefix in prefixes) {
+      final ips = List.generate(254, (i) => "$prefix${i + 1}");
+      for (var i = 0; i < ips.length; i += batchSize) {
+        if (_isDisposed) break;
+        final batch = ips.sublist(i, (i + batchSize > ips.length) ? ips.length : i + batchSize);
+        final results = await Future.wait(batch.map((ip) => _probeHost(ip, port, timeoutMs: 500)));
+        for (var j = 0; j < batch.length; j++) {
+          if (results[j]) {
+            final ip = batch[j];
+            if (!found.contains(ip)) found.add(ip);
+            if (!_discoveredAppliances.contains(ip)) {
+              _discoveredAppliances.add(ip);
+              _discoveredHost ??= ip;
+              notifyListeners();
+            }
+          }
+        }
+      }
+    }
+
+    _isScanningSubnet = false;
+    notifyListeners();
+    return found;
+  }
+
+  Future<void> triggerManualSubnetScan() async {
+    final found = await scanSubnet();
+    if (found.length == 1) {
+      final host = found.first;
+      _discoveredHost = host;
+      final token = _pairingInfo?.token;
+      if (token != null && token.isNotEmpty) {
+        final port = _pairingInfo?.port ?? 8080;
+        final success = await _tryConnectWebSocket("ws://$host:$port/ws?token=$token", ActiveTransport.wifi);
+        if (success) return;
+      }
+    }
+    notifyListeners();
   }
 
   Future<void> _connectPriorityChain() async {
@@ -169,17 +258,37 @@ class TransportManager extends ChangeNotifier {
       }
     }
 
+    // Priority 3: Subnet scan fallback if direct hosts failed to connect
+    if (!_isDisposed && _activeTransport != ActiveTransport.wifi) {
+      final subnetDevices = await scanSubnet();
+      if (subnetDevices.isNotEmpty) {
+        if (subnetDevices.length == 1) {
+          final host = subnetDevices.first;
+          _discoveredHost = host;
+          if (token != null && token.isNotEmpty) {
+            final success = await _tryConnectWebSocket(
+              "ws://$host:$port/ws?token=$token",
+              ActiveTransport.wifi,
+            );
+            if (success) return;
+          }
+        }
+        // Multiple devices or no token saved: leave _discoveredAppliances set for user selection
+        notifyListeners();
+      }
+    }
+
     // Retry chain after delay if everything fails
     _activeTransport = ActiveTransport.disconnected;
     notifyListeners();
-    _reconnectTimer = Timer(const Duration(seconds: 3), _connectPriorityChain);
+    _reconnectTimer = Timer(const Duration(seconds: 4), _connectPriorityChain);
   }
 
-  Future<bool> _probeHost(String host, int port) async {
+  Future<bool> _probeHost(String host, int port, {int timeoutMs = 1200}) async {
     try {
-      final client = HttpClient()..connectionTimeout = const Duration(milliseconds: 1200);
+      final client = HttpClient()..connectionTimeout = Duration(milliseconds: timeoutMs);
       final request = await client.getUrl(Uri.parse("http://$host:$port/api/status"));
-      final response = await request.close();
+      final response = await request.close().timeout(Duration(milliseconds: timeoutMs));
       client.close();
       return response.statusCode == 200 || response.statusCode == 401;
     } catch (_) {
