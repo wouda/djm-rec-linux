@@ -775,10 +775,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: const Color(0xFF232A3B)),
         ),
-        child: const Row(
+        child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Column(
+            const Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
@@ -800,12 +800,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ],
             ),
             Container(
-              padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: const BoxDecoration(
                 color: Color(0xFF334155),
                 borderRadius: BorderRadius.all(Radius.circular(16)),
               ),
-              child: Text(
+              child: const Text(
                 "○ OFFLINE",
                 style: TextStyle(
                   color: Color(0xFF94A3B8),

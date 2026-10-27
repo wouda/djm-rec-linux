@@ -1,11 +1,16 @@
 import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:djm_companion/main.dart';
 import 'package:djm_companion/models/command.dart';
 import 'package:djm_companion/models/pairing_info.dart';
 import 'package:djm_companion/models/telemetry.dart';
 
 void main() {
+  test('App root widget instantiates cleanly', () {
+    expect(const DjmCompanionApp(), isNotNull);
+  });
+
   group('Telemetry Binary Packing and Unpacking', () {
     test('Unpack 20-byte binary frame matching djm_common', () {
       final bytes = Uint8List(20);
