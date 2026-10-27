@@ -112,6 +112,22 @@ async fn handle_api_command(
     Ok(StatusCode::OK)
 }
 
+struct ProcessStream {
+    stream: tokio_util::io::ReaderStream<tokio::process::ChildStdout>,
+    _child: tokio::process::Child,
+}
+
+impl futures_util::Stream for ProcessStream {
+    type Item = std::io::Result<axum::body::Bytes>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        std::pin::Pin::new(&mut self.stream).poll_next(cx)
+    }
+}
+
 async fn handle_audio_test_stream(
     State(state): State<WebState>,
     Query(query): Query<AuthQuery>,
@@ -136,17 +152,11 @@ async fn handle_audio_test_stream(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    // Determine start offset: last 15 seconds if active_file_duration_secs > 15
-    let start_sec = t.active_file_duration_secs.saturating_sub(15);
-
     let mut cmd = tokio::process::Command::new("ffmpeg");
     cmd.kill_on_drop(true);
-
-    if start_sec > 0 {
-        cmd.arg("-ss").arg(start_sec.to_string());
-    }
-
     cmd.args([
+        "-sseof",
+        "-15",
         "-i",
         filepath.to_str().unwrap_or(""),
         "-t",
@@ -214,14 +224,9 @@ async fn handle_audio_live_stream(
     let mut cmd = tokio::process::Command::new("ffmpeg");
     cmd.kill_on_drop(true);
 
-    cmd.arg("-follow").arg("1");
-    // If recording duration is already past 2 seconds, seek near the live edge
-    if t.active_file_duration_secs > 2 {
-        let live_start = t.active_file_duration_secs.saturating_sub(2);
-        cmd.arg("-ss").arg(live_start.to_string());
-    }
-
     cmd.args([
+        "-follow",
+        "1",
         "-re",
         "-i",
         filepath.to_str().unwrap_or(""),
@@ -244,8 +249,11 @@ async fn handle_audio_live_stream(
     })?;
     let stdout = child.stdout.take().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let stream = tokio_util::io::ReaderStream::new(stdout);
-    let body = axum::body::Body::from_stream(stream);
+    let process_stream = ProcessStream {
+        stream: tokio_util::io::ReaderStream::new(stdout),
+        _child: child,
+    };
+    let body = axum::body::Body::from_stream(process_stream);
 
     Response::builder()
         .status(StatusCode::OK)
@@ -486,6 +494,7 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
   let liveTimer = null;
   let liveSeconds = 0;
   let isConnected = false;
+  let latestTelemetry = null;
 
   function connectWS() {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -499,6 +508,7 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
 
     ws.onmessage = (e) => {
       const t = JSON.parse(e.data);
+      latestTelemetry = t;
       updateUI(t);
     };
 
@@ -529,13 +539,30 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
     }
     stopAudio();
 
+    if (latestTelemetry && latestTelemetry.state !== 'Recording') {
+      alert("Audio preview unavailable: djm-box is not currently recording to disk.");
+      return;
+    }
+
     const btn = document.getElementById('btnTestAudio');
     const fill = document.getElementById('testProgressFill');
     const pContainer = document.getElementById('testProgressBarContainer');
     const countText = document.getElementById('testCountdownText');
 
     audioEl = new Audio(`/api/audio/test-stream?token=${encodeURIComponent(token)}`);
-    audioEl.play().catch(err => {
+    audioEl.play().catch(async (err) => {
+      try {
+        const check = await fetch(`/api/audio/test-stream?token=${encodeURIComponent(token)}`, { method: 'HEAD' });
+        if (check.status === 409) {
+          alert("Audio preview unavailable: djm-box is not currently recording to disk.");
+          stopAudio();
+          return;
+        } else if (check.status === 401) {
+          alert("Authentication failed: invalid PIN / auth token.");
+          stopAudio();
+          return;
+        }
+      } catch (_) {}
       alert("Audio stream playback failed: " + err);
       stopAudio();
     });
@@ -570,11 +597,28 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
     }
     stopAudio();
 
+    if (latestTelemetry && latestTelemetry.state !== 'Recording') {
+      alert("Live streaming unavailable: djm-box is not currently recording to disk.");
+      return;
+    }
+
     const btn = document.getElementById('btnLiveAudio');
     const countText = document.getElementById('testCountdownText');
 
     audioEl = new Audio(`/api/audio/live-stream?token=${encodeURIComponent(token)}`);
-    audioEl.play().catch(err => {
+    audioEl.play().catch(async (err) => {
+      try {
+        const check = await fetch(`/api/audio/live-stream?token=${encodeURIComponent(token)}`, { method: 'HEAD' });
+        if (check.status === 409) {
+          alert("Live stream unavailable: djm-box is not currently recording to disk.");
+          stopAudio();
+          return;
+        } else if (check.status === 401) {
+          alert("Authentication failed: invalid PIN / auth token.");
+          stopAudio();
+          return;
+        }
+      } catch (_) {}
       alert("Live stream failed: " + err);
       stopAudio();
     });
