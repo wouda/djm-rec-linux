@@ -360,7 +360,7 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
   <div class="card header">
     <div>
       <h2 style="font-size: 1.25rem; letter-spacing: -0.5px; display: flex; align-items: center; gap: 8px;">
-        djm-box remote <span style="font-size: 0.75rem; background: #1e2638; border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: #94a3b8;">v0.2.4</span>
+        djm-box remote <span style="font-size: 0.75rem; background: #1e2638; border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: #94a3b8;">v0.2.5</span>
       </h2>
       <div id="mixerModel" class="mixer-info" style="margin-top: 4px;">Connecting to daemon...</div>
     </div>
