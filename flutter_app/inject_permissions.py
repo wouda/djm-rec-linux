@@ -63,7 +63,25 @@ with open(gradle_props, "w") as f:
     f.writelines(props_lines)
 print("Successfully configured android/gradle.properties")
 
-# 4. Configure Groovy build.gradle if present
+# 4. Find pre-installed NDK if available
+ndk_roots = [
+    os.environ.get("ANDROID_HOME", "") + "/ndk",
+    os.environ.get("ANDROID_SDK_ROOT", "") + "/ndk",
+    "/usr/local/lib/android/sdk/ndk",
+    "/opt/android-sdk/ndk"
+]
+installed_ndk = None
+for root in ndk_roots:
+    if root and os.path.exists(root):
+        ndks = [d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))]
+        if ndks:
+            installed_ndk = sorted(ndks)[-1]
+            break
+
+if installed_ndk:
+    print(f"Detected pre-installed Android NDK: {installed_ndk}")
+
+# 5. Configure Groovy build.gradle if present
 gradle_file = "android/app/build.gradle"
 if os.path.exists(gradle_file):
     with open(gradle_file, "r") as f:
@@ -75,14 +93,15 @@ if os.path.exists(gradle_file):
     elif "minSdkVersion" in content:
         content = re.sub(r'minSdkVersion\s+.*', 'minSdkVersion 24', content)
 
-    # Remove ndkVersion so Gradle uses pre-installed runner NDK instead of downloading 1.2GB NDK
-    content = re.sub(r'ndkVersion\s+.*', '', content)
+    # Pin ndkVersion to pre-installed version so Gradle doesn't download 1.2GB NDK
+    if installed_ndk:
+        content = re.sub(r'ndkVersion\s+.*', f'ndkVersion "{installed_ndk}"', content)
 
     with open(gradle_file, "w") as f:
         f.write(content)
     print("Successfully configured android/app/build.gradle with minSdkVersion 24")
 
-# 5. Configure Kotlin DSL build.gradle.kts if present
+# 6. Configure Kotlin DSL build.gradle.kts if present
 kts_file = "android/app/build.gradle.kts"
 if os.path.exists(kts_file):
     with open(kts_file, "r") as f:
@@ -94,8 +113,9 @@ if os.path.exists(kts_file):
     elif "minSdk" in content:
         content = re.sub(r'minSdk\s*=\s*flutter\.minSdkVersion', 'minSdk = 24', content)
 
-    # Remove ndkVersion so Gradle uses pre-installed runner NDK instead of downloading 1.2GB NDK
-    content = re.sub(r'ndkVersion\s*=.*', '', content)
+    # Pin ndkVersion to pre-installed version so Gradle doesn't download 1.2GB NDK
+    if installed_ndk:
+        content = re.sub(r'ndkVersion\s*=.*', f'ndkVersion = "{installed_ndk}"', content)
 
     with open(kts_file, "w") as f:
         f.write(content)
