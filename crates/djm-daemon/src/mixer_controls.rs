@@ -13,7 +13,11 @@ pub enum MixerError {
 }
 
 pub trait MixerController: Send + Sync {
-    fn configure_rec_out(&mut self, profile: &MixerProfile, include_djm_mic: bool) -> Result<(), MixerError>;
+    fn configure_rec_out(
+        &mut self,
+        profile: &MixerProfile,
+        include_djm_mic: bool,
+    ) -> Result<(), MixerError>;
     fn set_capture_pad(&mut self, profile: &MixerProfile, pad_db: i8) -> Result<(), MixerError>;
     fn get_capture_pad(&self, profile: &MixerProfile) -> Result<i8, MixerError>;
 }
@@ -35,7 +39,11 @@ impl AlsaMixerController {
 }
 
 impl MixerController for AlsaMixerController {
-    fn configure_rec_out(&mut self, profile: &MixerProfile, include_djm_mic: bool) -> Result<(), MixerError> {
+    fn configure_rec_out(
+        &mut self,
+        profile: &MixerProfile,
+        include_djm_mic: bool,
+    ) -> Result<(), MixerError> {
         let mixer = match self.open_mixer() {
             Ok(m) => m,
             Err(e) => {
@@ -44,45 +52,61 @@ impl MixerController for AlsaMixerController {
             }
         };
 
-        // Configure REC OUT channel pair routing (e.g., 'Input 5' -> 'Rec Out')
+        // Configure REC OUT channel pair routing (e.g., 'Input 5' -> 'Rec Out', or 'Master Input' -> 'Rec Out without Mic')
         let pair_idx = (profile.rec_out_channels.0 / 2) + 1;
         let input_selem_name = format!("Input {}", pair_idx);
         let input_switch_name = format!("Input {} Capture Switch", pair_idx);
         let ch_input_name = format!("Ch{} Input", pair_idx);
-        let target_val = profile.routing_control_value.unwrap_or("Rec Out");
+        let preferred_target = if !include_djm_mic {
+            "Rec Out without Mic"
+        } else {
+            profile.routing_control_value.unwrap_or("Rec Out")
+        };
+        let fallback_target = profile.routing_control_value.unwrap_or("Rec Out");
 
-        let mut routing_candidates: Vec<&str> = Vec::new();
+        let mut routing_candidates: Vec<String> = Vec::new();
         if let Some(ctrl_name) = profile.routing_control_name {
-            routing_candidates.push(ctrl_name);
+            routing_candidates.push(ctrl_name.to_string());
+            routing_candidates.push(format!("{} Capture Switch", ctrl_name));
         }
-        if !routing_candidates.contains(&input_selem_name.as_str()) {
-            routing_candidates.push(&input_selem_name);
+        if !routing_candidates.contains(&input_selem_name) {
+            routing_candidates.push(input_selem_name);
         }
-        if !routing_candidates.contains(&input_switch_name.as_str()) {
-            routing_candidates.push(&input_switch_name);
+        if !routing_candidates.contains(&input_switch_name) {
+            routing_candidates.push(input_switch_name);
         }
-        if !routing_candidates.contains(&ch_input_name.as_str()) {
-            routing_candidates.push(&ch_input_name);
+        if !routing_candidates.contains(&ch_input_name) {
+            routing_candidates.push(ch_input_name);
         }
 
         let mut routed = false;
-        for ctrl_name in routing_candidates {
+        for ctrl_name in &routing_candidates {
             let selem_id = SelemId::new(ctrl_name, 0);
             if let Some(selem) = mixer.find_selem(&selem_id) {
                 if selem.is_enumerated() {
                     if let Ok(count) = selem.get_enum_items() {
+                        let mut match_idx = None;
                         for idx in 0..count {
                             if let Ok(item_name) = selem.get_enum_item_name(idx) {
-                                if item_name.eq_ignore_ascii_case(target_val) {
-                                    let _ = selem.set_enum_item(SelemChannelId::mono(), idx);
-                                    info!(
-                                        "Configured {} '{}' to '{}' (index {})",
-                                        self.card_name, ctrl_name, item_name, idx
-                                    );
-                                    routed = true;
+                                if item_name.eq_ignore_ascii_case(preferred_target) {
+                                    match_idx = Some((idx, item_name));
                                     break;
+                                } else if match_idx.is_none()
+                                    && item_name.eq_ignore_ascii_case(fallback_target)
+                                {
+                                    match_idx = Some((idx, item_name));
                                 }
                             }
+                        }
+
+                        if let Some((idx, item_name)) = match_idx {
+                            let _ = selem.set_enum_item(SelemChannelId::mono(), idx);
+                            info!(
+                                "Configured {} '{}' to '{}' (index {})",
+                                self.card_name, ctrl_name, item_name, idx
+                            );
+                            routed = true;
+                            break;
                         }
                     }
                 }
@@ -183,7 +207,10 @@ impl MixerController for AlsaMixerController {
                     let target_db = (pad_db as i64) * 100;
                     let clamped_db = target_db.clamp(min_db.0, max_db.0);
                     selem.set_capture_db_all(MilliBel(clamped_db), Round::Floor)?;
-                    info!("Set hardware pad '{}' on {} to {} dB", ctrl_name, self.card_name, pad_db);
+                    info!(
+                        "Set hardware pad '{}' on {} to {} dB",
+                        ctrl_name, self.card_name, pad_db
+                    );
                     return Ok(());
                 } else if selem.is_enumerated() {
                     if let Ok(count) = selem.get_enum_items() {
@@ -260,7 +287,11 @@ impl Default for MockMixerController {
 }
 
 impl MixerController for MockMixerController {
-    fn configure_rec_out(&mut self, profile: &MixerProfile, include_djm_mic: bool) -> Result<(), MixerError> {
+    fn configure_rec_out(
+        &mut self,
+        profile: &MixerProfile,
+        include_djm_mic: bool,
+    ) -> Result<(), MixerError> {
         if profile.routing_control_name.is_some() {
             self.routing_configured = true;
         }

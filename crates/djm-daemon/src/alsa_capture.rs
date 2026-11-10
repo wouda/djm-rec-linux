@@ -24,6 +24,20 @@ pub struct AlsaCapture {
     running: Arc<AtomicBool>,
 }
 
+struct PlaybackGuard {
+    active: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for PlaybackGuard {
+    fn drop(&mut self) {
+        self.active.store(false, Ordering::SeqCst);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
 impl AlsaCapture {
     pub fn new(profile: MixerProfile, device_name: &str, running: Arc<AtomicBool>) -> Self {
         Self {
@@ -31,6 +45,115 @@ impl AlsaCapture {
             device_name: device_name.to_string(),
             running,
         }
+    }
+
+    /// Spawns a silent playback feeder thread for UAC2 implicit-feedback mixers (such as DJM-A9)
+    /// whose capture endpoint (0x83 IN) is clock-synced to the playback endpoint (0x03 OUT) and
+    /// requires active full-duplex streaming to transmit non-zero capture audio.
+    fn start_implicit_feedback_playback(&self) -> Option<PlaybackGuard> {
+        if !self.device_name.starts_with("hw:") {
+            return None;
+        }
+
+        let dev_name = self.device_name.clone();
+        let sample_rate = self.profile.native_sample_rate;
+        let global_running = self.running.clone();
+        let pb_active = Arc::new(AtomicBool::new(true));
+        let pb_active_thread = pb_active.clone();
+
+        let (init_tx, init_rx) = std::sync::mpsc::channel();
+
+        let handle = std::thread::spawn(move || {
+            let pcm = match PCM::new(&dev_name, alsa::Direction::Playback, false) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(
+                        "Implicit-feedback silent playback not opened on {}: {}",
+                        dev_name, e
+                    );
+                    let _ = init_tx.send(false);
+                    return;
+                }
+            };
+
+            let hwp = match HwParams::any(&pcm) {
+                Ok(h) => h,
+                Err(_) => {
+                    let _ = init_tx.send(false);
+                    return;
+                }
+            };
+
+            if hwp.set_access(Access::RWInterleaved).is_err() {
+                let _ = init_tx.send(false);
+                return;
+            }
+
+            let bytes_per_sample = if hwp.set_format(Format::S243LE).is_ok() {
+                3usize
+            } else if hwp.set_format(Format::s32()).is_ok() || hwp.set_format(Format::s24()).is_ok()
+            {
+                4usize
+            } else {
+                let _ = init_tx.send(false);
+                return;
+            };
+
+            let pb_channels = hwp.get_channels_max().unwrap_or(10);
+            if hwp.set_channels(pb_channels).is_err() {
+                let _ = init_tx.send(false);
+                return;
+            }
+
+            if hwp.set_rate(sample_rate, ValueOr::Nearest).is_err() {
+                let _ = init_tx.send(false);
+                return;
+            }
+
+            let buffer_size = (sample_rate / 20) as alsa::pcm::Frames;
+            let period_size = (sample_rate / 100) as alsa::pcm::Frames;
+            let _ = hwp.set_buffer_size_near(buffer_size);
+            let _ = hwp.set_period_size_near(period_size, ValueOr::Nearest);
+
+            if pcm.hw_params(&hwp).is_err() {
+                let _ = init_tx.send(false);
+                return;
+            }
+
+            let io = pcm.io_bytes();
+            let zero_buf =
+                vec![0u8; (period_size as usize) * (pb_channels as usize) * bytes_per_sample];
+
+            // Pre-fill two periods of silence so playback clock is active immediately
+            let _ = io.writei(&zero_buf);
+            let _ = io.writei(&zero_buf);
+            info!(
+                "Started implicit-feedback silent playback stream on {} ({} ch, {} Hz)",
+                dev_name, pb_channels, sample_rate
+            );
+            let _ = init_tx.send(true);
+
+            while global_running.load(Ordering::Relaxed) && pb_active_thread.load(Ordering::Relaxed)
+            {
+                if let Err(err) = io.writei(&zero_buf) {
+                    let errno = err.errno();
+                    if errno == nix::libc::ENODEV || errno == nix::libc::EBADFD {
+                        break;
+                    } else if errno == nix::libc::EAGAIN || errno == nix::libc::EINTR {
+                        continue;
+                    } else if pcm.try_recover(err, true).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let _ = init_rx.recv_timeout(Duration::from_secs(2));
+
+        Some(PlaybackGuard {
+            active: pb_active,
+            handle: Some(handle),
+        })
     }
 
     /// Captures audio in a dedicated real-time thread, de-interleaving the REC OUT channel pair
@@ -42,8 +165,13 @@ impl AlsaCapture {
     ) -> Result<(), CaptureError> {
         info!(
             "Initializing ALSA capture for {} on device {} ({} channels, {} Hz)",
-            self.profile.name, self.device_name, self.profile.total_channels, self.profile.native_sample_rate
+            self.profile.name,
+            self.device_name,
+            self.profile.total_channels,
+            self.profile.native_sample_rate
         );
+
+        let _playback_guard = self.start_implicit_feedback_playback();
 
         let mut attempts = 0;
         let pcm = loop {
@@ -58,7 +186,10 @@ impl AlsaCapture {
                         );
                         std::thread::sleep(Duration::from_millis(200));
                     } else {
-                        warn!("Failed to open PCM capture device {}: {}", self.device_name, e);
+                        warn!(
+                            "Failed to open PCM capture device {}: {}",
+                            self.device_name, e
+                        );
                         if let Some(tx) = ready_tx {
                             let _ = tx.send(Err(format!("snd_pcm_open failed: {}", e)));
                         }
@@ -97,7 +228,9 @@ impl AlsaCapture {
         } else {
             let err = alsa::Error::new("snd_pcm_hw_params_set_format", -22);
             if let Some(tx) = ready_tx {
-                let _ = tx.send(Err("set_format failed for S24_3LE, S32_LE, S24_LE".to_string()));
+                let _ = tx.send(Err(
+                    "set_format failed for S24_3LE, S32_LE, S24_LE".to_string()
+                ));
             }
             return Err(CaptureError::Alsa(err));
         };
@@ -157,29 +290,30 @@ impl AlsaCapture {
                         let l_off = frame_offset + rec_l_idx * bytes_per_sample;
                         let r_off = frame_offset + rec_r_idx * bytes_per_sample;
 
-                        let (s24_l, s24_r) = if sample_format == Format::S243LE || sample_format == Format::s24() {
-                            let l = ((read_buffer[l_off + 2] as i8 as i32) << 16)
-                                | ((read_buffer[l_off + 1] as i32) << 8)
-                                | (read_buffer[l_off] as i32);
-                            let r = ((read_buffer[r_off + 2] as i8 as i32) << 16)
-                                | ((read_buffer[r_off + 1] as i32) << 8)
-                                | (read_buffer[r_off] as i32);
-                            (l, r)
-                        } else {
-                            let l32 = i32::from_le_bytes([
-                                read_buffer[l_off],
-                                read_buffer[l_off + 1],
-                                read_buffer[l_off + 2],
-                                read_buffer[l_off + 3],
-                            ]);
-                            let r32 = i32::from_le_bytes([
-                                read_buffer[r_off],
-                                read_buffer[r_off + 1],
-                                read_buffer[r_off + 2],
-                                read_buffer[r_off + 3],
-                            ]);
-                            (l32 >> 8, r32 >> 8)
-                        };
+                        let (s24_l, s24_r) =
+                            if sample_format == Format::S243LE || sample_format == Format::s24() {
+                                let l = ((read_buffer[l_off + 2] as i8 as i32) << 16)
+                                    | ((read_buffer[l_off + 1] as i32) << 8)
+                                    | (read_buffer[l_off] as i32);
+                                let r = ((read_buffer[r_off + 2] as i8 as i32) << 16)
+                                    | ((read_buffer[r_off + 1] as i32) << 8)
+                                    | (read_buffer[r_off] as i32);
+                                (l, r)
+                            } else {
+                                let l32 = i32::from_le_bytes([
+                                    read_buffer[l_off],
+                                    read_buffer[l_off + 1],
+                                    read_buffer[l_off + 2],
+                                    read_buffer[l_off + 3],
+                                ]);
+                                let r32 = i32::from_le_bytes([
+                                    read_buffer[r_off],
+                                    read_buffer[r_off + 1],
+                                    read_buffer[r_off + 2],
+                                    read_buffer[r_off + 3],
+                                ]);
+                                (l32 >> 8, r32 >> 8)
+                            };
 
                         if producer.push((s24_l, s24_r)).is_err() {
                             // Ring buffer overrun, drop frame to maintain realtime capture

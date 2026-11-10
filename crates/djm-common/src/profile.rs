@@ -34,12 +34,24 @@ pub static PROFILES: &[MixerProfile] = &[
     MixerProfile {
         name: "AlphaTheta DJM-A9",
         vendor_id: VENDOR_ALPHATHETA_PIONEER,
+        product_id: 0x003c,
+        total_channels: 12,
+        native_sample_rate: 96000,
+        bit_depth: 24,
+        rec_out_channels: (0, 1),
+        routing_control_name: Some("Master Input"),
+        routing_control_value: Some("Rec Out"),
+        capture_pad_control_name: "Master Input Level",
+    },
+    MixerProfile {
+        name: "AlphaTheta DJM-A9",
+        vendor_id: VENDOR_ALPHATHETA_PIONEER,
         product_id: 0x0043,
         total_channels: 12,
         native_sample_rate: 96000,
         bit_depth: 24,
-        rec_out_channels: (8, 9),
-        routing_control_name: Some("Input 5"),
+        rec_out_channels: (0, 1),
+        routing_control_name: Some("Master Input"),
         routing_control_value: Some("Rec Out"),
         capture_pad_control_name: "Master Input Level",
     },
@@ -157,7 +169,11 @@ pub fn generic_pioneer_profile(
         vendor_id,
         product_id,
         total_channels: detected_channels.max(2),
-        native_sample_rate: if detected_rate > 0 { detected_rate } else { 48000 },
+        native_sample_rate: if detected_rate > 0 {
+            detected_rate
+        } else {
+            48000
+        },
         bit_depth: 24,
         rec_out_channels: rec_pair,
         routing_control_name: None,
@@ -171,7 +187,8 @@ pub fn match_mixer_from_card_id(card_id: &str) -> Option<MixerProfile> {
     if lower.contains("900nxs2") {
         find_profile_by_usb_id(VENDOR_ALPHATHETA_PIONEER, 0x000a)
     } else if lower.contains("a9") {
-        find_profile_by_usb_id(VENDOR_ALPHATHETA_PIONEER, 0x0043)
+        find_profile_by_usb_id(VENDOR_ALPHATHETA_PIONEER, 0x003c)
+            .or_else(|| find_profile_by_usb_id(VENDOR_ALPHATHETA_PIONEER, 0x0043))
     } else if lower.contains("v10") {
         find_profile_by_usb_id(VENDOR_ALPHATHETA_PIONEER, 0x002d)
     } else if lower.contains("900nxs") {
@@ -203,14 +220,19 @@ mod tests {
 
         let a9 = find_profile_by_usb_id(0x2b73, 0x0043).expect("DJM-A9 not found");
         assert_eq!(a9.native_sample_rate, 96000);
-        assert_eq!(a9.rec_out_channels, (8, 9));
+        assert_eq!(a9.rec_out_channels, (0, 1));
+
+        let a9_usb_a = find_profile_by_usb_id(0x2b73, 0x003c).expect("DJM-A9 (0x003c) not found");
+        assert_eq!(a9_usb_a.native_sample_rate, 96000);
+        assert_eq!(a9_usb_a.rec_out_channels, (0, 1));
 
         let v10 = find_profile_by_usb_id(0x2b73, 0x0034).expect("DJM-V10 (0x0034) not found");
         assert_eq!(v10.native_sample_rate, 96000);
         assert_eq!(v10.capture_pad_control_name, "Master Input Level");
         assert_eq!(v10.routing_control_name, Some("Input 5"));
 
-        let v10_legacy = find_profile_by_usb_id(0x2b73, 0x002d).expect("DJM-V10 (0x002d) not found");
+        let v10_legacy =
+            find_profile_by_usb_id(0x2b73, 0x002d).expect("DJM-V10 (0x002d) not found");
         assert_eq!(v10_legacy.native_sample_rate, 96000);
 
         let nxs1 = find_profile_by_usb_id(0x08e4, 0x015c).expect("DJM-900NXS not found");
