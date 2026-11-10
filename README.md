@@ -26,11 +26,13 @@ Designed for Linux (CachyOS / Arch Linux), `djm-rec-linux` transforms a laptop, 
 - **Laptop Closed-Lid Operation**: Automatically configures `/etc/systemd/logind.conf.d/djm-appliance.conf` to ignore lid-close events. DJs can close the laptop lid in the booth; the screen blanks to save power while audio recording and telemetry continue uninterrupted.
 - **Dynamic Performance Power Profiles**: Switches the system to `performance` mode via `powerprofilesctl` when recording begins to prevent CPU frequency scaling latency/xruns, and reverts to `balanced` when idle.
 - **Power-Loss & Crash Resilience**: Staged `.flac.part` files, 2-second `fdatasync()`, 30-second `STREAMINFO` header checkpoints, and automatic boot-time repair guarantee playable audio even if the power cable is pulled mid-set.
-- **Fault-Isolated Multi-Process Architecture**: Audio capture (`djm-daemon`), terminal UI (`djm-tui`), and remote bridges (`djm-remote`) run in completely separate OS processes communicating over a non-blocking Unix Domain Socket. A crash or lag in the UI or network never drops a single audio frame.
+- **Pioneer Pro DJ Link Live Deck Telemetry**: Dedicated, fault-isolated daemon (`djm-prodj`) connects to Pioneer Pro DJ Link over Ethernet to track CDJ On-Air status, BPM, playhead advance, USB sticks, and B2B alternating clusters with passive settling, zero contestation, and automatic virtual slot release.
+- **Post-Event Audio Mastering Studio**: Built directly into the CLI (`djm-box process`), web dashboard, and companion app. Automatically audits 3-hour rollovers, resolves set boundaries (silence midpoints, USB handovers, timetable clocks), normalizes loudness (-14 LUFS Streaming, -11 LUFS Club), applies 4× oversampled true peak limiting and de-clipping, and exports tracklists, cue sheets, and comprehensive quality reports (`Event_Report.{html,md,json}`).
+- **Fault-Isolated Multi-Process Architecture**: Audio capture (`djm-daemon`), Pro DJ Link (`djm-prodj`), terminal UI (`djm-tui`), and remote bridges (`djm-remote`) run in completely separate OS processes communicating over non-blocking Unix Domain Sockets. A crash or lag in the UI or network never drops a single audio frame.
 - **Multi-Transport Remote Monitoring & Bit-Perfect Verification**:
   - **15-Second Lossless FLAC Audio Preview**: Tap "Test Audio (15s)" in the web or mobile app to stream a live 15-second snippet of the active 24-bit FLAC recording directly from disk without touching or risking the recording daemon.
-  - **Local Web Dashboard (`http://<ip>:8080`)**: Clean dark-mode UI with dual stereo VU meters, file stats, FLAC audio preview player with live countdown bar, and remote actions (Split, Bookmark, Lock -19dB).
-  - **Smart Wi-Fi Autodetection & Companion App**: Mobile companion app automatically discovers the booth hotspot (`10.42.0.1:8080`) and LAN mDNS (`djm-box.local:8080`) on launch, connects with a saved PIN or 1-tap PIN modal, and features an unmistakable offline layout that never confuses network disconnects with mixer hardware issues.
+  - **Local Web Dashboard (`http://<ip>:8080`)**: Clean dark-mode UI with dual stereo VU meters, live Pro DJ Link deck cards, file stats, FLAC audio preview player with live countdown bar, and the interactive **Post-Event Mastering Studio** tab.
+  - **Smart Wi-Fi Autodetection & Companion App**: Mobile companion app automatically discovers the booth hotspot (`10.42.0.1:8080`) and LAN mDNS (`djm-box.local:8080`) on launch, connects with a saved PIN or 1-tap PIN modal, displays live deck cards (including Degraded Mode fallbacks), and provides mobile set splitting & mastering.
   - **Direct Local Wi-Fi Hotspot (`10.42.0.1`)**: Automatically starts a local NetworkManager Wi-Fi hotspot (`DJM-Box-Booth`) when no venue Wi-Fi/LAN is connected, giving phones full 60 FPS WebSocket telemetry directly in offline club booths.
   - **Two-Step QR Code & 6-Digit PIN Pairing**: Scan Step 1 with a phone camera to join the hotspot, and scan Step 2 to open the dashboard or companion app instantly.
 
@@ -40,41 +42,41 @@ Designed for Linux (CachyOS / Arch Linux), `djm-rec-linux` transforms a laptop, 
 
 ```
                    +-----------------------------------------------+
-                   |          PIONEER / ALPHATHETA MIXER           |
-                   |    (DJM-900NXS2, DJM-V10, DJM-A9, etc.)       |
-                   +-----------------------+-----------------------+
-                                           | USB-B (Ch 5/6 REC OUT + Mic)
-                                           v
-+-----------------------------------------------------------------------------------------+
-| djm-daemon (Systemd User Service: djm-box-daemon.service)                               |
-|                                                                                         |
-|  +--------------------+        +---------------------+        +-----------------------+ |
-|  | Native ALSA Capture| -----> | Lock-Free SPSC Ring | -----> | FLAC Staged Writer    | |
-|  | (96kHz/48kHz 24bit)|        | Buffer + 2s PreRoll |        | (.flac.part + fdatasync|
-|  +--------------------+        +---------------------+        +-----------+-----------+ |
-|                                                                           |             |
-|  +--------------------+        +---------------------+                    v             |
-|  | Hardware Controls  |        | Power Profiles      |         +----------------------+ |
-|  | (-19dB Pad + Mic)  |        | (Performance Mode)  |         | Session Audit Log    | |
-|  +--------------------+        +---------------------+         | (*.log with MB/min)  | |
-+-------------------------------------------+---------------------------------------------+
-                                            | Non-Blocking Unix Socket (/run/user/1000/djm-box.sock)
-                   +------------------------+------------------------+
-                   |                                                 |
-                   v                                                 v
-+---------------------------------------+         +---------------------------------------+
-| djm-tui (Terminal Dashboard)          |         | djm-remote (djm-box-remote.service)   |
-| - Header with Mixer & Record status   |         | - Web Remote HTTP & WebSocket (:8080) |
-| - High-precision Stereo VU Meters     |         | - Auto Local Wi-Fi Hotspot (10.42.0.1)|
-| - Hotkeys: Bookmark, Split, Pad, QR, H|         | - PIN Authentication Watchdog         |
-+---------------------------------------+         +-------------------+-------------------+
-                                                                      |
-                                                                      v
-                                                  +---------------------------------------+
-                                                  | Phone Browser / Companion App         |
-                                                  | Direct Hotspot: http://10.42.0.1:8080 |
-                                                  | Local LAN / mDNS: djm-box.local:8080  |
-                                                  +---------------------------------------+
+                   |          PIONEER / ALPHATHETA BOOTH           |
+                   |   (DJM-900NXS2, DJM-V10, DJM-A9, CDJ-3000s)   |
+                   +--------------+-----------------+--------------+
+                                  |                 |
+                   USB-B (Audio)  |                 |  Ethernet RJ-45 (Link UDP)
+                                  v                 v
++------------------------------------+   +------------------------------------+
+| djm-daemon (djm-box-daemon.service)|   | djm-prodj (djm-box-prodj.service)  |
+| - ALSA Capture (96/48 kHz, 24-bit) |   | - Passive UDP Discovery & Settling |
+| - SPSC Ring Buffer + 2s PreRoll    |   | - 4/6-Player Virtual Arbitration   |
+| - Staged FLAC Writer (.flac.part)  |   | - On-Air & B2B Cluster Tracking    |
+| - Auto-Guard & Hardware Pad Control|   | - Session Log (*_prodj.jsonl)      |
++------------------+-----------------+   +------------------+-----------------+
+                   |                                        |
+                   | /run/user/1000/djm-box.sock            | /run/user/1000/djm-prodj.sock
+                   +-------------------+--------------------+
+                                       |
+                   +-------------------+--------------------+
+                   |                                        |
+                   v                                        v
++------------------------------------+   +------------------------------------+
+| djm-tui (Terminal Dashboard)       |   | djm-remote (djm-box-remote.service)|
+| - Live VU Meters & Headroom dB     |   | - Web Remote HTTP & WS (:8080)     |
+| - CDJ Deck Cards (On-Air / BPM)    |   | - Post-Event Studio API & Template |
+| - QR Code & Hotspot Controls       |   | - Auto Local Wi-Fi Hotspot (10.42) |
++------------------------------------+   +------------------+-----------------+
+                                                            |
+                                                            v
++------------------------------------+   +------------------------------------+
+| djm-box process (Mastering Studio) |   | Phone Browser / Companion App      |
+| - Seam Continuity & Alignment Audit|   | - Live Meters & On-Air Deck Cards  |
+| - Boundary Resolver (Silence / USB)|   | - 15s Test FLAC & Live MP3 Stream  |
+| - EBU R128 (-14 / -11 LUFS) Master |   | - Mobile Post-Event Studio Screen  |
+| - HTML / Markdown / JSON Reports   |   |   (Timetable, Splits, Master, Rep) |
++------------------------------------+   +------------------------------------+
 ```
 
 ---
@@ -107,14 +109,14 @@ cargo build --release
 ```
 
 ### 3. Run Appliance Setup
-The `setup` command automatically installs system dependencies (`alsa-lib`, `flac`, `pipewire`, `networkmanager`, `avahi`), installs binaries to `~/.cargo/bin/`, sets up systemd user services, configures WirePlumber pro-audio rules, and ensures lid-close sleep is disabled:
+The `setup` command automatically installs system dependencies (`alsa-lib`, `flac`, `pipewire`, `networkmanager`, `avahi`, `ffmpeg`), installs binaries to `~/.cargo/bin/`, sets up systemd user services (`djm-box-daemon`, `djm-box-remote`, `djm-box-prodj`), configures WirePlumber pro-audio rules, and ensures lid-close sleep is disabled:
 ```bash
 ./target/release/djm-box setup
 ```
 
 ### 4. Start Background Services
 ```bash
-systemctl --user enable --now djm-box-daemon djm-box-remote
+systemctl --user enable --now djm-box-daemon djm-box-remote djm-box-prodj
 ```
 
 ---
@@ -239,9 +241,20 @@ djm-box prodj decks
 
 ## Output Files & Audit Logs
 
-Recordings are saved to `~/Music/DJ_Recordings/` (configurable in `config.toml`):
-- **FLAC Files**: `Pioneer_DJM-900NXS2_YYYY-MM-DD_HH-MM-SS_pt01.flac`
-- **Session Audit Logs**: `Pioneer_DJM-900NXS2_YYYY-MM-DD_HH-MM-SS.log` containing start timestamp, sample rate, hardware pad, periodic status updates (written MB and duration), bookmarks, digital clipping warnings, and clean termination summaries.
+### Raw Capture Files (`~/Music/DJ_Recordings/`)
+Configurable in `config.toml` (`[storage] output_dir`):
+- **Master FLAC Recordings**: `Pioneer_DJM-900NXS2_YYYY-MM-DD_HH-MM-SS_pt01.flac` (24-bit / 96 kHz or 48 kHz bit-perfect audio).
+- **Synchronized Ambient Recordings**: `..._pt01_ambient.flac` (synchronized crowd/room capture tagged with master segment name and sample offset).
+- **Session Audit Logs**: `..._pt01.log` (text log containing RFC 3339 timestamps with UTC offsets, periodic MB/duration updates, digital clipping counts, Auto-Guard adjustments, and clean shutdown summaries).
+- **Pro DJ Link Event Stream**: `..._prodj.jsonl` (line-delimited JSON log of On-Air state transitions, played tracks, CDJ deck telemetry, and USB media handovers).
+
+### Mastered Studio Outputs (`<session>_mastered/`)
+Generated by `djm-box process`, the Web Dashboard, or the Companion App:
+- **Individual Artist Sets (FLAC)**: `01_Artist_Name_mastered.flac` (EBU R128 loudness normalized, 4× oversampled true peak limited, tagged with artist, date, and set title).
+- **Individual Artist Sets (MP3)**: `01_Artist_Name.mp3` (320 kbps high-bitrate MP3 with ID3v2 tags).
+- **Full Event Continuous Mix**: `00_Full_Event_Continuous_Mix.flac` (gapless concatenation of the entire event).
+- **Interactive Event Report**: `Event_Report.html` (self-contained HTML report with measured LUFS, true peak headroom, clipping audit, and continuity tables).
+- **Audit Reports & Cue Sheets**: `Event_Report.md`, `Event_Report.json`, `tracklist.txt`, and `Event.cue` (sub-second cue sheet with exact artist boundaries).
 
 ---
 
