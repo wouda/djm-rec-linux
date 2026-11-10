@@ -5,7 +5,7 @@
 
 > [!NOTE]
 > **Notice**: `djm-rec-linux` is developed specifically for recording an upcoming [craterdnb.com](https://craterdnb.com) event. Totally vibe coded. ⚡🎧
-> **Hardware Status**: Quickly tested and confirmed working on **Pioneer DJM-V10**! Fully configured and supported for **DJM-900NXS2** and **DJM-A9**.
+> **Hardware Status**: Tested and confirmed working on **Pioneer DJM-V10** and **DJM-A9**! Fully configured and supported for **DJM-900NXS2**.
 
 **Autonomous, bulletproof DJ mixer recording appliance for Pioneer and AlphaTheta club mixers.**
 
