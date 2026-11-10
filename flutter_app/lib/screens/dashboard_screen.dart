@@ -210,7 +210,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 border: Border.all(color: const Color(0xFF232A3B)),
               ),
               child: const Text(
-                "v0.2.6",
+                "v0.2.8",
                 style: TextStyle(
                   color: Color(0xFF94A3B8),
                   fontSize: 10,
