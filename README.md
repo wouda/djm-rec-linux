@@ -1,11 +1,15 @@
 # djm-rec-linux 🎛️
 
+[![Website](https://img.shields.io/badge/Website-djm--rec--linux.wouda.eu-blue.svg)](https://djm-rec-linux.wouda.eu/)
 [![Release](https://img.shields.io/github/v/release/wouda/djm-rec-linux?color=brightgreen&label=Latest%20Release)](https://github.com/wouda/djm-rec-linux/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 > [!NOTE]
-> **Notice**: `djm-rec-linux` is developed specifically for recording an upcoming [craterdnb.com](https://craterdnb.com) event. Totally vibe coded. ⚡🎧
-> **Hardware Status**: Tested and confirmed working on **Pioneer DJM-V10** and **DJM-A9**! Fully configured and supported for **DJM-900NXS2**.
+> **Hardware Status**: Tested and confirmed working on **Pioneer DJM-V10** and **DJM-A9**!
+>
+> Live recorded a [craterdnb.com](https://craterdnb.com) event.
+
+🌐 **Website**: [https://djm-rec-linux.wouda.eu/](https://djm-rec-linux.wouda.eu/)
 
 **Autonomous, bulletproof DJ mixer recording appliance for Pioneer and AlphaTheta club mixers.**
 
