@@ -20,31 +20,29 @@ pub enum AmbientCaptureError {
 
 /// Discovers the host machine's primary audio capture card, skipping DJ mixer cards.
 pub fn detect_host_capture_device() -> Option<String> {
-    for card in alsa::card::Iter::new() {
-        if let Ok(card) = card {
-            let card_name = card.get_name().unwrap_or_default();
-            let card_longname = card.get_longname().unwrap_or_default();
+    for card in alsa::card::Iter::new().flatten() {
+        let card_name = card.get_name().unwrap_or_default();
+        let card_longname = card.get_longname().unwrap_or_default();
 
-            // Filter out Pioneer / AlphaTheta DJ mixers
-            if match_mixer_from_card_id(&card_name).is_some()
-                || match_mixer_from_card_id(&card_longname).is_some()
-                || card_name.to_lowercase().contains("pioneer")
-                || card_name.to_lowercase().contains("alphatheta")
-            {
-                continue;
-            }
+        // Filter out Pioneer / AlphaTheta DJ mixers
+        if match_mixer_from_card_id(&card_name).is_some()
+            || match_mixer_from_card_id(&card_longname).is_some()
+            || card_name.to_lowercase().contains("pioneer")
+            || card_name.to_lowercase().contains("alphatheta")
+        {
+            continue;
+        }
 
-            // Test if card has capture PCM subdevices
-            let dev_name = format!("plughw:{},0", card.get_index());
-            if let Ok(pcm) = PCM::new(&dev_name, alsa::Direction::Capture, false) {
-                drop(pcm);
-                info!(
-                    "Auto-detected host ambient microphone on card {} ('{}')",
-                    card.get_index(),
-                    card_name
-                );
-                return Some(dev_name);
-            }
+        // Test if card has capture PCM subdevices
+        let dev_name = format!("plughw:{},0", card.get_index());
+        if let Ok(pcm) = PCM::new(&dev_name, alsa::Direction::Capture, false) {
+            drop(pcm);
+            info!(
+                "Auto-detected host ambient microphone on card {} ('{}')",
+                card.get_index(),
+                card_name
+            );
+            return Some(dev_name);
         }
     }
 

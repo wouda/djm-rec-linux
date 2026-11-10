@@ -5,6 +5,7 @@ members = [
     "crates/djm-tui",
     "crates/djm-remote",
     "crates/djm-cli",
+    "crates/djm-prodj",
 ]
 resolver = "2"
 
@@ -26,6 +27,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "1.0"
 anyhow = "1.0"
 byteorder = "1.5"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 
 [profile.release]
 strip = true

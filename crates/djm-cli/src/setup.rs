@@ -14,6 +14,7 @@ impl ApplianceSetup {
         "pipewire",
         "networkmanager",
         "avahi",
+        "ffmpeg",
     ];
 
     pub fn run_setup(dry_run: bool) -> Result<()> {
@@ -21,6 +22,9 @@ impl ApplianceSetup {
 
         // 1. Check system packages
         Self::check_packages();
+
+        // 2. Check audio analysis & rendering tooling (ffmpeg / ffprobe)
+        Self::check_audio_tooling();
 
         // 2. Initialize configuration file with random auth token
         Self::setup_config(dry_run)?;
@@ -66,6 +70,24 @@ impl ApplianceSetup {
                 "Some dependencies are not installed. You can install them with:\n  yay -S --needed {}",
                 missing.join(" ")
             );
+        }
+    }
+
+    pub fn check_audio_tooling() {
+        let ffmpeg_status = std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output();
+        let ffprobe_status = std::process::Command::new("ffprobe")
+            .arg("-version")
+            .output();
+
+        match (ffmpeg_status, ffprobe_status) {
+            (Ok(f), Ok(p)) if f.status.success() && p.status.success() => {
+                info!("  ✓ ffmpeg and ffprobe are available for studio analysis and rendering");
+            }
+            _ => {
+                warn!("  ✗ ffmpeg or ffprobe is missing or not executable! Audio quality analysis and studio rendering will be unavailable until installed. Install with: sudo pacman -S ffmpeg");
+            }
         }
     }
 
@@ -130,6 +152,24 @@ WantedBy=default.target
 "#
     }
 
+    pub fn generate_prodj_service() -> &'static str {
+        r#"[Unit]
+Description=djm-box Pioneer Pro DJ Link Telemetry Daemon
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/djm-prodj
+Restart=always
+RestartSec=3
+Environment="RUST_LOG=info"
+
+[Install]
+WantedBy=default.target
+"#
+    }
+
     pub fn install_systemd_user_services(dry_run: bool) -> Result<()> {
         let user_systemd_dir = if let Some(home) = std::env::var_os("HOME") {
             PathBuf::from(home).join(".config/systemd/user")
@@ -139,14 +179,17 @@ WantedBy=default.target
 
         let daemon_path = user_systemd_dir.join("djm-box-daemon.service");
         let remote_path = user_systemd_dir.join("djm-box-remote.service");
+        let prodj_path = user_systemd_dir.join("djm-box-prodj.service");
 
         info!("Installing systemd user service: {}", daemon_path.display());
         info!("Installing systemd user service: {}", remote_path.display());
+        info!("Installing systemd user service: {}", prodj_path.display());
 
         if !dry_run {
             fs::create_dir_all(&user_systemd_dir)?;
             fs::write(&daemon_path, Self::generate_daemon_service())?;
             fs::write(&remote_path, Self::generate_remote_service())?;
+            fs::write(&prodj_path, Self::generate_prodj_service())?;
         }
 
         Ok(())
@@ -164,7 +207,7 @@ WantedBy=default.target
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
             .unwrap_or_else(|| PathBuf::from("."));
 
-        let bins = ["djm-daemon", "djm-remote", "djm-box", "djm-tui"];
+        let bins = ["djm-daemon", "djm-remote", "djm-box", "djm-tui", "djm-prodj"];
         info!("Installing binaries to {}", cargo_bin_dir.display());
 
         if !dry_run {
@@ -397,5 +440,12 @@ mod tests {
         let remote_svc = ApplianceSetup::generate_remote_service();
         assert!(remote_svc.contains("NetworkManager.service"));
         assert!(!remote_svc.contains("bluetooth.service"));
+
+        let prodj_svc = ApplianceSetup::generate_prodj_service();
+        assert!(prodj_svc.contains("djm-prodj"));
+        assert!(prodj_svc.contains("network.target"));
+
+        // Verify ffmpeg is in required setup packages
+        assert!(ApplianceSetup::PACKAGES.contains(&"ffmpeg"));
     }
 }

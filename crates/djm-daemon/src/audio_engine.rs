@@ -77,7 +77,7 @@ impl AudioEngine {
         let mut file_start_time = Instant::now();
         let mut segment_index = 1;
 
-        let mut clip_counter = 0u16;
+        let mut clip_counter = 0u64;
         let mut peak_l_hold = -9600i16;
         let mut peak_r_hold = -9600i16;
         let mut live_peak_l = -9600i16;
@@ -127,25 +127,37 @@ impl AudioEngine {
         // Setup ambient capture if enabled
         let mut ambient_cons_opt = None;
         if self.config.audio.ambient_mic.enabled {
-            let ambient_dev_opt = if self.config.audio.ambient_mic.device == "auto" {
-                detect_host_capture_device()
-            } else {
-                Some(self.config.audio.ambient_mic.device.clone())
-            };
+            let ambient_rate = self.config.audio.ambient_mic.sample_rate;
+            let (ambient_prod, ambient_cons) = RingBuffer::<(i32, i32)>::new((ambient_rate / 10) as usize);
+            ambient_cons_opt = Some(ambient_cons);
 
-            if let Some(dev_name) = ambient_dev_opt {
-                let ambient_rate = self.config.audio.ambient_mic.sample_rate;
-                let (ambient_prod, ambient_cons) = RingBuffer::<(i32, i32)>::new((ambient_rate / 10) as usize);
-                ambient_cons_opt = Some(ambient_cons);
+            if mock_mode {
                 let amb_running = self.running.clone();
-                let loop_dev = dev_name.clone();
-                std::thread::spawn(move || {
-                    let capture_loop = AmbientCaptureLoop::new(&loop_dev, ambient_rate, amb_running);
-                    if let Err(e) = capture_loop.run(ambient_prod) {
-                        warn!("Ambient capture loop exited: {}", e);
-                    }
+                tokio::task::spawn_blocking(move || {
+                    let synth = SyntheticCapture::new(ambient_rate, amb_running);
+                    synth.run_continuous(ambient_prod, 220.0, 0.2);
                 });
-                info!("Ambient host capture initialized on device '{}'", dev_name);
+                info!("Mock ambient capture initialized");
+            } else {
+                let ambient_dev_opt = if self.config.audio.ambient_mic.device == "auto" {
+                    detect_host_capture_device()
+                } else {
+                    Some(self.config.audio.ambient_mic.device.clone())
+                };
+
+                if let Some(dev_name) = ambient_dev_opt {
+                    let amb_running = self.running.clone();
+                    let loop_dev = dev_name.clone();
+                    std::thread::spawn(move || {
+                        let capture_loop = AmbientCaptureLoop::new(&loop_dev, ambient_rate, amb_running);
+                        if let Err(e) = capture_loop.run(ambient_prod) {
+                            warn!("Ambient capture loop exited: {}", e);
+                        }
+                    });
+                    info!("Ambient host capture initialized on device '{}'", dev_name);
+                } else {
+                    ambient_cons_opt = None;
+                }
             }
         }
 
@@ -156,7 +168,7 @@ impl AudioEngine {
         let telemetry_period = Duration::from_millis(25); // 40 Hz telemetry emission
         let mut last_status_log_time = Instant::now();
         let mut last_status_log_mb = 0u64;
-        let mut unlogged_clips = 0u16;
+        let mut unlogged_clips = 0u64;
         let mut last_clip_log_time = Instant::now();
         let mut was_countdown_active = false;
 
@@ -174,7 +186,7 @@ impl AudioEngine {
                     // Safely close and finalize active recording so no data is corrupted
                     if let Some(mut log) = active_log.take() {
                         let dur = file_start_time.elapsed().as_secs();
-                        let total_mb = if let Some(ref w) = active_writer { (w.total_samples() * 6 / (1024 * 1024)) as u64 } else { 0 };
+                        let total_mb = if let Some(ref w) = active_writer { w.total_samples() * 6 / (1024 * 1024) } else { 0 };
                         let peak_db = (peak_l_hold.max(peak_r_hold) as f32) / 100.0;
                         let _ = log.log_stop("Mixer Disconnected (USB Unplugged)", dur, total_mb, peak_db, clip_counter);
                     }
@@ -465,6 +477,7 @@ impl AudioEngine {
                             session_id: session_id.clone(),
                             start_time_utc: start_local.clone(),
                             sample_offset: 0,
+                            master_segment_file: None,
                         });
 
                         // Prepend pre-roll buffer
@@ -510,8 +523,11 @@ impl AudioEngine {
                             ),
                         );
 
-                        // Start ambient stream if available and not yet open
-                        if ambient_cons_opt.is_some() && ambient_writer.is_none() {
+                        // Start ambient stream if available. Rotate ambient writer whenever a master segment opens.
+                        if ambient_cons_opt.is_some() {
+                            if let Some(old_amb) = ambient_writer.take() {
+                                let _ = old_amb.finalize();
+                            }
                             if let Ok(mut amb_w) = Self::create_new_flac_segment(
                                 &output_dir,
                                 &active_mixer_profile,
@@ -526,6 +542,7 @@ impl AudioEngine {
                                     session_id: session_id.clone(),
                                     start_time_utc: start_local.clone(),
                                     sample_offset: 0,
+                                    master_segment_file: Some(fname.clone()),
                                 });
                                 let _ = log.log_stream_opened("AMBIENT", amb_w.target_path(), self.config.audio.ambient_mic.sample_rate, 0);
                                 ambient_writer = Some(amb_w);
@@ -545,7 +562,7 @@ impl AudioEngine {
                         Self::set_system_power_profile_async("balanced");
                         if let Some(mut log) = active_log.take() {
                             let dur = file_start_time.elapsed().as_secs();
-                            let total_mb = if let Some(ref w) = active_writer { (w.total_samples() * 6 / (1024 * 1024)) as u64 } else { 0 };
+                            let total_mb = if let Some(ref w) = active_writer { w.total_samples() * 6 / (1024 * 1024) } else { 0 };
                             let peak_db = (peak_l_hold.max(peak_r_hold) as f32) / 100.0;
                             let _ = log.log_stop("Silence Timeout Gate", dur, total_mb, peak_db, clip_counter);
                         }
@@ -707,6 +724,7 @@ impl AudioEngine {
                     }),
                     pause_countdown_secs: silence_gate.silence_countdown_remaining(),
                     recent_logs: recent_events.iter().cloned().collect(),
+                    prodj: None,
                 };
 
                 let _ = telemetry_tx.send(telemetry);
@@ -718,7 +736,7 @@ impl AudioEngine {
         if let Some(mut log) = active_log.take() {
             let dur = file_start_time.elapsed().as_secs();
             let total_mb = if let Some(ref w) = active_writer {
-                (w.total_samples() * 6 / (1024 * 1024)) as u64
+                w.total_samples() * 6 / (1024 * 1024)
             } else {
                 0
             };
@@ -745,12 +763,12 @@ impl AudioEngine {
         });
     }
 
-    fn calculate_dsp_metrics(samples: &[(i32, i32)]) -> (i16, i16, i16, i16, u16) {
+    fn calculate_dsp_metrics(samples: &[(i32, i32)]) -> (i16, i16, i16, i16, u64) {
         let mut max_l = 0i32;
         let mut max_r = 0i32;
         let mut sum_sq_l = 0.0f64;
         let mut sum_sq_r = 0.0f64;
-        let mut clips = 0u16;
+        let mut clips = 0u64;
 
         const CLIP_THRESHOLD: i32 = 8_388_600; // >= 0 dBFS in 24-bit
 
@@ -831,6 +849,7 @@ impl AudioEngine {
         FlacWriter::new(&target_path, sample_rate, compression_level, sync_interval_secs)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn split_active_file(
         writer: &mut Option<FlacWriter>,
         ambient_writer: &mut Option<FlacWriter>,
@@ -847,12 +866,12 @@ impl AudioEngine {
         current_pad: i8,
         auto_guard: bool,
         peak_hold: i16,
-        clips: u16,
+        clips: u64,
         reason: &str,
     ) -> Result<()> {
         let dur = file_start_time.elapsed().as_secs();
         let total_mb = if let Some(ref w) = writer {
-            (w.total_samples() * 6 / (1024 * 1024)) as u64
+            w.total_samples() * 6 / (1024 * 1024)
         } else {
             0
         };
@@ -889,6 +908,7 @@ impl AudioEngine {
             session_id: session_id.to_string(),
             start_time_utc: start_local.clone(),
             sample_offset: 0,
+            master_segment_file: None,
         });
 
         let mut new_log = SessionLog::new(new_writer.target_path())?;
@@ -919,11 +939,18 @@ impl AudioEngine {
                 sync_interval_secs,
                 "ambient",
             ) {
+                let master_fname = new_writer
+                    .target_path()
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 new_amb.set_metadata(StreamMetadata {
                     stream_type: "AMBIENT".to_string(),
                     session_id: session_id.to_string(),
                     start_time_utc: start_local,
                     sample_offset: 0,
+                    master_segment_file: Some(master_fname),
                 });
                 let _ = new_log.log_stream_opened("AMBIENT", new_amb.target_path(), ambient_rate, 0);
                 *ambient_writer = Some(new_amb);
@@ -994,4 +1021,21 @@ fn local_iso_string() -> String {
         tm.tm_sec,
         millis
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_dsp_metrics_large_clip_count() {
+        // Create 70,000 samples exceeding CLIP_THRESHOLD (8_388_600)
+        let samples = vec![(8_388_607, 8_388_607); 70_000];
+        let (peak_l, peak_r, _, _, clips) = AudioEngine::calculate_dsp_metrics(&samples);
+
+        assert_eq!(clips, 70_000u64);
+        assert!(clips > u16::MAX as u64);
+        assert_eq!(peak_l, 0); // 0 centi-dBFS
+        assert_eq!(peak_r, 0);
+    }
 }

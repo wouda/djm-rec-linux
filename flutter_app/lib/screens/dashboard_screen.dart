@@ -5,10 +5,12 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../models/command.dart';
+import '../models/prodj.dart';
 import '../models/telemetry.dart';
 import '../services/transport_manager.dart';
 import '../widgets/vu_meter.dart';
 import 'pairing_screen.dart';
+import 'post_event_studio_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -464,6 +466,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ],
               ),
             ),
+
+            // Pro DJ Link CDJ Decks
+            if (isConnected && t.prodj != null) ...[
+              const SizedBox(height: 12),
+              _buildProDjSection(context, t.prodj!),
+            ],
+
+            const SizedBox(height: 12),
+
+            // Post-Event Mastering Studio Launcher Card
+            _buildStudioLauncherCard(context, isConnected),
           ],
         ),
       ),
@@ -1024,6 +1037,266 @@ class _DashboardScreenState extends State<DashboardScreen> {
         style: const TextStyle(
           fontSize: 13,
           fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildProDjSection(BuildContext context, ProDjTelemetry prodj) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131722),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF232A3B)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.lan, color: Color(0xFF00F0FF), size: 16),
+                  const SizedBox(width: 8),
+                  Text(
+                    "PRO DJ LINK (${prodj.devices.length} DEVICES)",
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ],
+              ),
+              Wrap(
+                spacing: 4,
+                children: [
+                  if (prodj.isDegraded)
+                    _buildSmallBadge("DEGRADED (PASSIVE)", const Color(0xFFEAB308))
+                  else
+                    _buildSmallBadge("ACTIVE SYNC", const Color(0xFF16A34A)),
+                  if (prodj.virtualPlayerNumber != null)
+                    _buildSmallBadge("PLAYER #${prodj.virtualPlayerNumber}", const Color(0xFF0284C7)),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (prodj.decks.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                "Passive monitoring active · No CDJ players discovered yet.",
+                style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+              ),
+            )
+          else
+            ...prodj.decks.map((deck) => _buildDeckCard(deck)),
+          if (prodj.activeClusters.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0A0D14),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: const Color(0xFF1E2638)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    "Detected B2B USB Clusters:",
+                    style: TextStyle(color: Color(0xFF94A3B8), fontSize: 10, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 4),
+                  ...prodj.activeClusters.map(
+                    (c) => Text(
+                      "• Cluster #${c.clusterId}: ${c.mediaNames.join(' / ')} (${c.trackCount} tracks, ${c.proposedArtist ?? 'Unassigned'})",
+                      style: const TextStyle(color: Color(0xFFE2E8F0), fontSize: 11),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDeckCard(ProDjDeckStatus deck) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0A0D14),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: deck.isOnAir ? const Color(0xFFFF3344) : const Color(0xFF1E2638),
+          width: deck.isOnAir ? 1.5 : 1.0,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                "PLAYER ${deck.playerNumber}",
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
+              ),
+              Row(
+                children: [
+                  if (deck.isMaster) ...[
+                    _buildSmallBadge("MASTER", const Color(0xFFF97316)),
+                    const SizedBox(width: 4),
+                  ],
+                  if (deck.isOnAir)
+                    _buildSmallBadge("ON AIR", const Color(0xFFFF3344))
+                  else if (deck.isPlaying)
+                    _buildSmallBadge("PLAYING", const Color(0xFF16A34A)),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            deck.displayTitle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: deck.displayTitle == "unavailable" ? const Color(0xFF64748B) : Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 13,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            deck.displayArtist,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: deck.displayArtist == "unavailable" ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+              fontSize: 11,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                deck.displayBpm,
+                style: TextStyle(
+                  color: deck.displayBpm == "unavailable" ? const Color(0xFF64748B) : const Color(0xFF00F0FF),
+                  fontSize: 11,
+                  fontFamily: "monospace",
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              Row(
+                children: [
+                  const Icon(Icons.usb, size: 12, color: Color(0xFF94A3B8)),
+                  const SizedBox(width: 4),
+                  Text(
+                    deck.displayMedia,
+                    style: TextStyle(
+                      color: deck.displayMedia == "unavailable" ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStudioLauncherCard(BuildContext context, bool isConnected) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131722),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF232A3B)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.tune, color: Color(0xFF00F0FF), size: 18),
+              SizedBox(width: 8),
+              Text(
+                "POST-EVENT MASTERING STUDIO",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            "Split sets by artist, repair clips, apply broadcast mastering (-14 LUFS / -11 LUFS) & export reports.",
+            style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+          ),
+          const SizedBox(height: 10),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1E2638),
+              foregroundColor: const Color(0xFF00F0FF),
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+                side: const BorderSide(color: Color(0xFF232A3B)),
+              ),
+              elevation: 0,
+            ),
+            icon: const Icon(Icons.open_in_new, size: 16),
+            label: const Text(
+              "Open Mastering Studio",
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+            ),
+            onPressed: isConnected
+                ? () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const PostEventStudioScreen(),
+                      ),
+                    );
+                  }
+                : null,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSmallBadge(String text, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Colors.black,
+          fontSize: 9,
+          fontWeight: FontWeight.w900,
         ),
       ),
     );

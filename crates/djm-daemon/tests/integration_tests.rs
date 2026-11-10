@@ -216,3 +216,83 @@ fn test_simulated_usb_disconnect_and_reconnection() {
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
+
+#[test]
+fn test_ambient_stream_rotation_and_tagging() {
+    use djm_daemon::flac_writer::StreamMetadata;
+
+    let tmp_dir = std::env::temp_dir().join(format!("test_djm_ambient_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp_dir);
+
+    // Segment 1 master and ambient
+    let master1_path = tmp_dir.join("DJM_2026-11-10_pt01.flac");
+    let mut master1 = FlacWriter::new(&master1_path, 48000, 5, 1).unwrap();
+    master1.set_metadata(StreamMetadata {
+        stream_type: "MASTER".to_string(),
+        session_id: "test_session".to_string(),
+        start_time_utc: "2026-11-10T10:00:00.000+01:00".to_string(),
+        sample_offset: 0,
+        master_segment_file: None,
+    });
+    master1.write_interleaved(&[(1000, 1000); 480]).unwrap();
+    let m1_final = master1.finalize().unwrap();
+
+    let amb1_path = tmp_dir.join("DJM_2026-11-10_pt01_ambient.flac");
+    let mut amb1 = FlacWriter::new(&amb1_path, 48000, 5, 1).unwrap();
+    amb1.set_metadata(StreamMetadata {
+        stream_type: "AMBIENT".to_string(),
+        session_id: "test_session".to_string(),
+        start_time_utc: "2026-11-10T10:00:00.000+01:00".to_string(),
+        sample_offset: 0,
+        master_segment_file: Some(m1_final.file_name().unwrap().to_string_lossy().to_string()),
+    });
+    amb1.write_interleaved(&[(500, 500); 480]).unwrap();
+    let a1_final = amb1.finalize().unwrap();
+
+    // Segment 2 master and ambient after rotation
+    let master2_path = tmp_dir.join("DJM_2026-11-10_pt02.flac");
+    let mut master2 = FlacWriter::new(&master2_path, 48000, 5, 1).unwrap();
+    master2.set_metadata(StreamMetadata {
+        stream_type: "MASTER".to_string(),
+        session_id: "test_session".to_string(),
+        start_time_utc: "2026-11-10T13:00:00.000+01:00".to_string(),
+        sample_offset: 0,
+        master_segment_file: None,
+    });
+    master2.write_interleaved(&[(1000, 1000); 480]).unwrap();
+    let m2_final = master2.finalize().unwrap();
+
+    let amb2_path = tmp_dir.join("DJM_2026-11-10_pt02_ambient.flac");
+    let mut amb2 = FlacWriter::new(&amb2_path, 48000, 5, 1).unwrap();
+    amb2.set_metadata(StreamMetadata {
+        stream_type: "AMBIENT".to_string(),
+        session_id: "test_session".to_string(),
+        start_time_utc: "2026-11-10T13:00:00.000+01:00".to_string(),
+        sample_offset: 0,
+        master_segment_file: Some(m2_final.file_name().unwrap().to_string_lossy().to_string()),
+    });
+    amb2.write_interleaved(&[(500, 500); 480]).unwrap();
+    let a2_final = amb2.finalize().unwrap();
+
+    // Verify files exist and metaflac contains tags
+    assert!(m1_final.exists());
+    assert!(a1_final.exists());
+    assert!(m2_final.exists());
+    assert!(a2_final.exists());
+
+    let out1 = std::process::Command::new("metaflac")
+        .arg("--show-tag=MASTER_SEGMENT_FILE")
+        .arg(&a1_final)
+        .output()
+        .expect("metaflac");
+    assert!(String::from_utf8_lossy(&out1.stdout).contains("DJM_2026-11-10_pt01.flac"));
+
+    let out2 = std::process::Command::new("metaflac")
+        .arg("--show-tag=MASTER_SEGMENT_FILE")
+        .arg(&a2_final)
+        .output()
+        .expect("metaflac");
+    assert!(String::from_utf8_lossy(&out2.stdout).contains("DJM_2026-11-10_pt02.flac"));
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}

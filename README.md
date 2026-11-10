@@ -177,6 +177,64 @@ djm-box pair
 ```
 Open `http://<ip-of-appliance>:8080` (or `http://10.42.0.1:8080` when on the hotspot) in any phone browser, or connect via the Android Companion App. Enter your 6-digit PIN.
 
+### Post-Event Audio Studio & Mastering (`djm-box process`)
+
+Automates session grouping, continuity auditing across multi-hour rollovers, artist boundary resolution, audio quality measurement, loudness normalization, FLAC/MP3 rendering, and report generation:
+
+```bash
+# Auto-detect latest session, resolve boundaries from timetable, render FLAC & MP3
+djm-box process --timetable timetable.txt --preset streaming --mp3 --full-event
+
+# Process a specific session folder or event date with club target (-11 LUFS)
+djm-box process --session 2026-10-30 --preset club --output-dir ./mastered_output
+
+# Dry-run analysis (computes LUFS, peaks, clipping stats, and boundary cuts without rendering)
+djm-box process --timetable timetable.txt --dry-run
+```
+
+#### Pipeline Stages:
+1. **Tooling & Recording Guardrail**: Verifies `ffmpeg`/`ffprobe` and aborts if `djm-daemon` is actively recording or entered `ArmedSilent` within the 10-minute quiet period (override with `--force`).
+2. **Session Discovery & Continuity Audit**: Groups rollover segments (`pt01..ptN.flac` and `.log`), identifies pre-event warmups, and audits sample-count continuity across 3-hour rollovers within 50 ms tolerance.
+3. **Boundary Resolution**: Auto-aligns timetable slots to handover silences (below -45 dBFS for ≥ 2.0 s within 15 min), Pro DJ Link USB handovers, or scheduled clock times.
+4. **Per-Set Audio Quality Analysis**: Measures Sample Peak (dBFS), True Peak (dBTP), RMS, Integrated LUFS, LRA, Crest Factor, flat-topped clipping factor, and digital clip counts in a single pass.
+5. **Normalization & Rendering**: Applies 25 Hz highpass, calculated gain, and 4× oversampled limiting (`aresample=384000,alimiter=limit=-1.0dBTP:level=false,aresample=96000`), with optional de-clipping (`--declip`).
+6. **Lossless Concat & Post-Render Verification**: Concatenates seamless full-event FLAC (`--full-event`), exports 320 kbps MP3s (`--mp3`), re-measures every rendered output against targets (flagging deviations > 1.0 LU or true-peak ceiling breaches), and generates complete reports (`Event_Report.html`, `Event_Report.md`, `Event_Report.json`, `tracklist.txt`, `Event.cue`).
+
+#### Performance Benchmarks (96 kHz 24-bit Stereo):
+| Stage | x86_64 Host Speed | aarch64 (Raspberry Pi 5) | aarch64 (Raspberry Pi 4) |
+| :--- | :--- | :--- | :--- |
+| **Analysis Pass** | ~38× real-time | ~12× real-time | ~6× real-time |
+| **Mastering FLAC Render** | ~66× real-time | ~18× real-time | ~8× real-time |
+| **MP3 (320k) Export** | ~120× real-time | ~25× real-time | ~10× real-time |
+| **Verification Pass** | ~38× real-time | ~12× real-time | ~6× real-time |
+| **Total Full Pipeline** | **~13.2× real-time** | **~5.5× real-time** | **~2.5× real-time** |
+| **Time per 1h Audio** | **~4.5 minutes** | **~11.0 minutes** | **~24.0 minutes** |
+
+### Pioneer Pro DJ Link Telemetry & Deck Monitoring (`djm-box prodj`)
+
+`djm-box` includes a dedicated, fault-isolated daemon (`djm-prodj` / `djm-box-prodj.service`) that connects to Pioneer Pro DJ Link over Ethernet to provide real-time deck telemetry, On-Air track detection, USB media identification, and automated tracklist generation:
+
+```bash
+# Query Pro DJ Link live network status, virtual player arbitration, and degraded mode
+djm-box prodj
+
+# List all discovered Pioneer CDJ decks and DJM mixers on the Link network
+djm-box prodj devices
+
+# Show active deck playback states, On-Air indicators, BPM, and current track titles
+djm-box prodj decks
+```
+
+#### Hardware & Ethernet Networking Requirements:
+- **Physical Booth Ethernet Cable**: Connect a standard RJ-45 Ethernet cable from the appliance (laptop or Raspberry Pi) to an open port on the booth's Ethernet switch (or the built-in Link hub of a DJM-V10 or DJM-A9).
+- **Network Addressing**: Pro DJ Link uses UDP broadcasts on ports `50000` (Announce/Keep-Alive), `50001` (Player Slot Claim), and `50002` (Mixer On-Air & CDJ Deck Status). Ensure the booth switch is an unmanaged switch that does not block or filter UDP broadcasts. Devices typically auto-configure using Link-Local IP addresses (`169.254.x.x`) or DHCP (`192.168.85.x`).
+- **Fault Isolation & Non-Disruptive Virtual Participation**:
+  - `djm-prodj` runs as a completely separate OS process communicating with the system via `/run/user/1000/djm-prodj.sock`. Audio capture in `djm-daemon` is 100% immune to network outages, packet floods, or unplugged cables.
+  - **Passive Settling**: Stays strictly passive upon connection while monitoring physical hardware.
+  - **6-Player Networks (V10 / A9)**: Prefers player numbers 6 or 5 once settled.
+  - **4-Player Networks (NXS2)**: Enforces a strict 3-minute live-audio gate (audio must play continuously with zero new hardware announcements) before claiming slot 4.
+  - **Zero Contestation**: The instant any physical player appears or claims our number, `djm-prodj` immediately releases its virtual slot without sending any contesting packets. If passive or unassigned, it runs seamlessly in Degraded Mode (logging On-Air durations, BPM, and USB stick handovers).
+
 ---
 
 ## Output Files & Audit Logs

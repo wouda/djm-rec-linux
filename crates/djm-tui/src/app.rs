@@ -80,6 +80,26 @@ impl TuiApp {
             }
         });
 
+        // Inbound Pro DJ Link telemetry reader task
+        let (prodj_tx, prodj_rx) = tokio::sync::watch::channel(None::<djm_common::prodj::ProDjTelemetry>);
+        tokio::spawn(async move {
+            let prodj_sock = djm_common::prodj::default_prodj_socket_path();
+            loop {
+                if let Ok(stream) = UnixStream::connect(&prodj_sock).await {
+                    let (p_reader, _) = stream.into_split();
+                    let mut p_lines = BufReader::new(p_reader).lines();
+                    while let Ok(Some(line)) = p_lines.next_line().await {
+                        let trimmed = line.trim();
+                        if let Ok(p_telem) = serde_json::from_str::<djm_common::prodj::ProDjTelemetry>(trimmed) {
+                            let _ = prodj_tx.send(Some(p_telem));
+                        }
+                    }
+                }
+                let _ = prodj_tx.send(None);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+
         // Setup terminal
         enable_raw_mode()?;
         stdout().execute(EnterAlternateScreen)?;
@@ -96,6 +116,7 @@ impl TuiApp {
 
         loop {
             let current_telemetry = telemetry_rx.borrow().clone();
+            let current_prodj = prodj_rx.borrow().clone();
 
             if status_expire <= std::time::Instant::now() {
                 status_msg = None;
@@ -109,6 +130,7 @@ impl TuiApp {
                     show_pairing,
                     show_wifi_qr,
                     status_msg.as_deref(),
+                    current_prodj.as_ref(),
                 );
             })?;
 

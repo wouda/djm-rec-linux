@@ -8,6 +8,8 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/command.dart';
 import '../models/pairing_info.dart';
 import '../models/telemetry.dart';
+import '../models/prodj.dart';
+import '../models/studio.dart';
 
 enum ActiveTransport {
   disconnected,
@@ -79,6 +81,163 @@ class TransportManager extends ChangeNotifier {
   String get liveAudioStreamUrl {
     final token = _pairingInfo?.token ?? "";
     return "$_resolvedHttpBase/api/audio/live-stream?token=${Uri.encodeComponent(token)}";
+  }
+
+  String get apiBaseUrl => _resolvedHttpBase;
+  String get authToken => _pairingInfo?.token ?? "";
+
+  Future<List<EventSession>> fetchStudioSessions() async {
+    final client = HttpClient();
+    try {
+      final uri = Uri.parse("$_resolvedHttpBase/api/studio/sessions?token=${Uri.encodeComponent(authToken)}");
+      final req = await client.getUrl(uri);
+      final resp = await req.close();
+      final body = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode == 200) {
+        final list = json.decode(body) as List<dynamic>;
+        return list.map((s) => EventSession.fromJson(s as Map<String, dynamic>)).toList();
+      } else {
+        throw Exception("Failed to load sessions: ${resp.statusCode} $body");
+      }
+    } finally {
+      client.close();
+    }
+  }
+
+  Future<TimetableResponse> fetchStudioTimetable(String sessionId) async {
+    final client = HttpClient();
+    try {
+      final uri = Uri.parse("$_resolvedHttpBase/api/studio/timetable?token=${Uri.encodeComponent(authToken)}&session=${Uri.encodeComponent(sessionId)}");
+      final req = await client.getUrl(uri);
+      final resp = await req.close();
+      final body = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode == 200) {
+        return TimetableResponse.fromJson(json.decode(body) as Map<String, dynamic>);
+      } else {
+        throw Exception("Failed to load timetable: ${resp.statusCode} $body");
+      }
+    } finally {
+      client.close();
+    }
+  }
+
+  Future<TimetableResponse> saveStudioTimetable(String sessionId, String content) async {
+    final client = HttpClient();
+    try {
+      final uri = Uri.parse("$_resolvedHttpBase/api/studio/timetable?token=${Uri.encodeComponent(authToken)}");
+      final req = await client.postUrl(uri);
+      req.headers.contentType = ContentType.json;
+      req.write(json.encode({
+        'session_id': sessionId,
+        'content': content,
+      }));
+      final resp = await req.close();
+      final body = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode == 200) {
+        return TimetableResponse.fromJson(json.decode(body) as Map<String, dynamic>);
+      } else {
+        throw Exception("Failed to save timetable: ${resp.statusCode} $body");
+      }
+    } finally {
+      client.close();
+    }
+  }
+
+  Future<String> startStudioAnalyze(String sessionId) async {
+    final client = HttpClient();
+    try {
+      final uri = Uri.parse("$_resolvedHttpBase/api/studio/analyze?token=${Uri.encodeComponent(authToken)}");
+      final req = await client.postUrl(uri);
+      req.headers.contentType = ContentType.json;
+      req.write(json.encode({'session_id': sessionId}));
+      final resp = await req.close();
+      final body = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode == 200) {
+        final map = json.decode(body) as Map<String, dynamic>;
+        return map['job_id'] as String;
+      } else {
+        throw Exception("Failed to start analysis: ${resp.statusCode} $body");
+      }
+    } finally {
+      client.close();
+    }
+  }
+
+  Future<String> startStudioRender(RenderRequest request) async {
+    final client = HttpClient();
+    try {
+      final uri = Uri.parse("$_resolvedHttpBase/api/studio/render?token=${Uri.encodeComponent(authToken)}");
+      final req = await client.postUrl(uri);
+      req.headers.contentType = ContentType.json;
+      req.write(json.encode(request.toJson()));
+      final resp = await req.close();
+      final body = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode == 200) {
+        final map = json.decode(body) as Map<String, dynamic>;
+        return map['job_id'] as String;
+      } else {
+        throw Exception("Failed to start render: ${resp.statusCode} $body");
+      }
+    } finally {
+      client.close();
+    }
+  }
+
+  Future<JobState> fetchStudioJob(String jobId) async {
+    final client = HttpClient();
+    try {
+      final uri = Uri.parse("$_resolvedHttpBase/api/studio/jobs/${Uri.encodeComponent(jobId)}?token=${Uri.encodeComponent(authToken)}");
+      final req = await client.getUrl(uri);
+      final resp = await req.close();
+      final body = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode == 200) {
+        return JobState.fromJson(json.decode(body) as Map<String, dynamic>);
+      } else {
+        throw Exception("Failed to fetch job state: ${resp.statusCode} $body");
+      }
+    } finally {
+      client.close();
+    }
+  }
+
+  Future<String> fetchStudioReport(String sessionId) async {
+    final client = HttpClient();
+    try {
+      final uri = Uri.parse("$_resolvedHttpBase/api/studio/report?token=${Uri.encodeComponent(authToken)}&session=${Uri.encodeComponent(sessionId)}");
+      final req = await client.getUrl(uri);
+      final resp = await req.close();
+      final body = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode == 200) {
+        return body;
+      } else {
+        throw Exception("Failed to fetch report: ${resp.statusCode} $body");
+      }
+    } finally {
+      client.close();
+    }
+  }
+
+  String getTransitionPreviewUrl(String sessionId, int boundarySample, {int durationSecs = 15}) {
+    return "$_resolvedHttpBase/api/studio/preview-transition?token=${Uri.encodeComponent(authToken)}&session=${Uri.encodeComponent(sessionId)}&boundary_sample=$boundarySample&duration_secs=$durationSecs";
+  }
+
+  Future<ProDjTelemetry?> fetchProDjStatus() async {
+    final client = HttpClient();
+    try {
+      final uri = Uri.parse("$_resolvedHttpBase/api/prodj/status?token=${Uri.encodeComponent(authToken)}");
+      final req = await client.getUrl(uri);
+      final resp = await req.close();
+      final body = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode == 200) {
+        if (body.isEmpty || body == "null") return null;
+        return ProDjTelemetry.fromJson(json.decode(body) as Map<String, dynamic>);
+      }
+      return null;
+    } catch (_) {
+      return null;
+    } finally {
+      client.close();
+    }
   }
 
   TransportManager() {

@@ -1,8 +1,10 @@
 use anyhow::Result;
 use djm_common::config::AppConfig;
+use djm_common::prodj::default_prodj_socket_path;
 use djm_common::protocol::default_socket_path;
 use djm_remote::daemon_client::DaemonClient;
 use djm_remote::hotspot::HotspotWatchdog;
+use djm_remote::prodj_client::ProDjClient;
 use djm_remote::web_server::WebServer;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -39,6 +41,13 @@ async fn main() -> Result<()> {
         client.run().await;
     });
 
+    // Spawn Pro DJ Link client connection
+    let prodj_sock = default_prodj_socket_path();
+    let (prodj_client, prodj_rx) = ProDjClient::new(prodj_sock, running.clone());
+    tokio::spawn(async move {
+        prodj_client.run().await;
+    });
+
     // Start Hotspot Watchdog service (auto-fallback if offline)
     let hotspot = HotspotWatchdog::new(
         config.remote.hotspot_mode.clone(),
@@ -57,6 +66,7 @@ async fn main() -> Result<()> {
             config.remote.auth_token.clone(),
             config.storage.resolved_output_dir(),
             telemetry_rx.clone(),
+            prodj_rx.clone(),
             command_tx.clone(),
             running.clone(),
         );

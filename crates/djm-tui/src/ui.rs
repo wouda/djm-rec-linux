@@ -13,8 +13,12 @@ pub fn draw_ui(
     show_pairing: bool,
     show_wifi_qr: bool,
     status_msg: Option<&str>,
+    prodj: Option<&djm_common::prodj::ProDjTelemetry>,
 ) {
     let size = f.area();
+
+    let has_prodj_decks = prodj.map(|p| !p.decks.is_empty()).unwrap_or(false);
+    let prodj_height = if has_prodj_decks { 5 } else { 0 };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -22,6 +26,7 @@ pub fn draw_ui(
             Constraint::Length(4), // Header
             Constraint::Length(8), // Dual Stereo VU Meters
             Constraint::Length(7), // Recording File & Disk Stats
+            Constraint::Length(prodj_height), // Deck Cards
             Constraint::Min(3),    // Status / Recent Logs
             Constraint::Length(2), // Hotkey Footer
         ])
@@ -30,11 +35,91 @@ pub fn draw_ui(
     draw_header(f, chunks[0], telemetry, pairing_info);
     draw_meters(f, chunks[1], telemetry);
     draw_file_stats(f, chunks[2], telemetry);
-    draw_status_logs(f, chunks[3], telemetry, status_msg);
-    draw_footer(f, chunks[4]);
+    if has_prodj_decks {
+        draw_deck_cards(f, chunks[3], prodj.unwrap());
+        draw_status_logs(f, chunks[4], telemetry, status_msg);
+        draw_footer(f, chunks[5]);
+    } else {
+        draw_status_logs(f, chunks[4], telemetry, status_msg);
+        draw_footer(f, chunks[5]);
+    }
 
     if show_pairing {
         draw_pairing_modal(f, size, pairing_info, show_wifi_qr);
+    }
+}
+
+fn draw_deck_cards(f: &mut Frame, area: Rect, prodj: &djm_common::prodj::ProDjTelemetry) {
+    if area.height == 0 || prodj.decks.is_empty() {
+        return;
+    }
+
+    let deck_count = prodj.decks.len().min(6);
+    let constraints: Vec<Constraint> = (0..deck_count)
+        .map(|_| Constraint::Ratio(1, deck_count as u32))
+        .collect();
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(area);
+
+    for (i, deck) in prodj.decks.iter().take(deck_count).enumerate() {
+        let (border_color, on_air_style) = if deck.is_on_air {
+            (
+                Color::Red,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            (Color::DarkGray, Style::default().fg(Color::DarkGray))
+        };
+
+        let on_air_str = if deck.is_on_air { " [ON-AIR] " } else { " [OFF] " };
+        let state_str = if deck.is_playing { "PLAY" } else { "CUE" };
+        let bpm_str = deck
+            .bpm
+            .map(|b| format!("{:.1} BPM", b))
+            .unwrap_or_else(|| "unavailable".to_string());
+        let title_str = deck.track_title.as_deref().unwrap_or("unavailable");
+        let artist_str = deck.track_artist.as_deref().unwrap_or("unavailable");
+        let media_str = deck
+            .usb_media_name
+            .as_deref()
+            .or(deck.usb_media_id.as_deref())
+            .unwrap_or("unavailable");
+
+        let title_line = Line::from(vec![
+            Span::styled(
+                format!("Deck #{} ", deck.player_number),
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(on_air_str, on_air_style),
+            Span::styled(format!(" [{}]", state_str), Style::default().fg(Color::Cyan)),
+        ]);
+
+        let track_line = Line::from(vec![
+            Span::styled("Track:  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                title_str,
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
+        ]);
+
+        let artist_line = Line::from(vec![
+            Span::styled(format!("Artist: {}  ", artist_str), Style::default().fg(Color::Gray)),
+            Span::styled(format!("BPM: {}  ", bpm_str), Style::default().fg(Color::Yellow)),
+            Span::styled(format!("USB: {}", media_str), Style::default().fg(Color::Magenta)),
+        ]);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color));
+
+        let paragraph = Paragraph::new(vec![title_line, track_line, artist_line]).block(block);
+        f.render_widget(paragraph, cols[i]);
     }
 }
 
@@ -367,5 +452,44 @@ mod tests {
         // -19 dBFS should be around 0.683
         let pct_19 = cdb_to_pct(-1900);
         assert!(pct_19 > 0.65 && pct_19 < 0.70);
+    }
+
+    #[test]
+    fn test_deck_cards_rendering_degraded_mode() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        use djm_common::prodj::{ProDjDeckStatus, ProDjTelemetry};
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut prodj = ProDjTelemetry::default();
+        prodj.is_degraded = true;
+        prodj.decks.push(ProDjDeckStatus {
+            player_number: 1,
+            is_on_air: true,
+            is_playing: true,
+            track_title: None, // degraded: unavailable
+            track_artist: None, // degraded: unavailable
+            bpm: None, // degraded: unavailable
+            usb_media_name: None,
+            degraded: true,
+            ..Default::default()
+        });
+
+        let telem = Telemetry::default();
+        let pairing = PairingInfo::default();
+
+        terminal.draw(|f| {
+            draw_ui(f, &telem, &pairing, false, false, None, Some(&prodj));
+        }).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let buffer_text: String = buffer.content().iter().map(|c| c.symbol()).collect();
+
+        // Verify "unavailable" is rendered on the deck card for missing metadata in degraded mode
+        assert!(buffer_text.contains("unavailable"));
+        assert!(buffer_text.contains("Deck #1"));
+        assert!(buffer_text.contains("ON-AIR"));
     }
 }

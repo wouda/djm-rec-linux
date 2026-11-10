@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<title>djm-box Remote & Studio</title>
+<style>
+  :root {
+    --bg: #090a0f;
+    --card: #131722;
+    --border: #232a3b;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #00f0ff;
+    --green: #00ff66;
+    --yellow: #ffd000;
+    --red: #ff3344;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; }
+  body { background: var(--bg); color: var(--text); padding: 12px; display: flex; flex-direction: column; gap: 12px; min-height: 100vh; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .header { display: flex; justify-content: space-between; align-items: center; }
+  
+  /* Tabs */
+  .nav-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 4px; }
+  .nav-tab { background: #1e2638; border: 1px solid var(--border); color: var(--muted); padding: 8px 16px; border-radius: 8px; font-weight: 700; font-size: 0.85rem; cursor: pointer; }
+  .nav-tab.active { background: var(--accent); color: #000; border-color: var(--accent); }
+
+  .badge { font-weight: 700; font-size: 0.8rem; padding: 6px 12px; border-radius: 20px; text-transform: uppercase; white-space: nowrap; }
+  .badge.mixer-on { background: #16a34a; color: #fff; }
+  .badge.mixer-off { background: #dc2626; color: #fff; animation: pulse 2s infinite; }
+  .badge.recording { background: var(--green); color: #000; animation: pulse 1.5s infinite; }
+  .badge.armed { background: var(--yellow); color: #000; }
+  .badge.disconnected { background: #334155; color: #94a3b8; }
+  @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
+  .mixer-info { font-size: 0.9rem; color: #94a3b8; }
+  
+  .meters { display: flex; flex-direction: column; gap: 12px; }
+  .meter-label { display: flex; justify-content: space-between; font-size: 0.85rem; font-weight: 600; margin-bottom: 4px; }
+  .bar-container { background: #000; height: 28px; border-radius: 6px; overflow: hidden; position: relative; border: 1px solid var(--border); }
+  .bar-fill { height: 100%; width: 0%; transition: width 0.05s ease-out; background: linear-gradient(90deg, #00ff66 0%, #ffd000 68%, #ff3344 95%); }
+  .ref-line { position: absolute; left: 68.3%; top: 0; bottom: 0; width: 2px; background: #fff; box-shadow: 0 0 6px #fff; z-index: 2; }
+  .ref-text { position: absolute; left: 68.5%; top: 4px; font-size: 0.7rem; color: #fff; transform: translateX(-50%); font-weight: 700; z-index: 3; text-shadow: 0 1px 2px #000; }
+  
+  .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9rem; }
+  .stat-item { background: #0a0d14; padding: 10px; border-radius: 8px; border: 1px solid #1a2233; }
+  .stat-val { font-size: 1.05rem; font-weight: 700; color: var(--accent); margin-top: 4px; }
+  .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 6px; }
+  button { background: #1e2638; color: #fff; border: 1px solid var(--border); padding: 12px; border-radius: 10px; font-weight: 700; font-size: 0.9rem; cursor: pointer; transition: all 0.1s; }
+  button:active { transform: scale(0.97); background: var(--accent); color: #000; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-test { background: #16a34a; display: flex; align-items: center; justify-content: center; gap: 8px; font-weight: 700; }
+  .btn-test:disabled { opacity: 0.45; cursor: not-allowed; background: #1e2638; color: #94a3b8; }
+  .btn-primary { background: #0284c7; color: #fff; }
+  
+  .clip-alert { display: none; background: var(--red); color: #fff; font-weight: 700; text-align: center; padding: 8px; border-radius: 8px; margin-top: 8px; }
+  .alert-banner { display: none; background: #450a0a; border: 1px solid #ef4444; color: #fecaca; padding: 12px; border-radius: 8px; font-weight: 600; font-size: 0.9rem; text-align: center; }
+  .alert-banner.offline { background: #451a03; border-color: #f59e0b; color: #fef3c7; }
+
+  /* Studio Elements */
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 8px; }
+  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  textarea { width: 100%; height: 110px; background: #0a0d14; border: 1px solid var(--border); border-radius: 8px; color: var(--text); padding: 10px; font-family: monospace; font-size: 0.85rem; resize: vertical; }
+  select, input[type="text"], input[type="number"] { background: #0a0d14; border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px 10px; font-size: 0.85rem; }
+  .progress-bar-bg { background: #000; height: 12px; border-radius: 6px; overflow: hidden; border: 1px solid var(--border); margin: 8px 0; }
+  .progress-bar-fill { background: var(--accent); height: 100%; width: 0%; transition: width 0.3s; }
+</style>
+</head>
+<body>
+
+  <!-- Top Header -->
+  <div class="card header">
+    <div>
+      <h2 style="font-size: 1.25rem; letter-spacing: -0.5px; display: flex; align-items: center; gap: 8px;">
+        djm-box <span style="font-size: 0.75rem; background: #1e2638; border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; color: #94a3b8;">v0.2.8</span>
+      </h2>
+      <div id="mixerModel" class="mixer-info" style="margin-top: 4px;">Connecting to daemon...</div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 6px; align-items: flex-end;">
+      <div id="mixerBadge" class="badge mixer-off">Checking Mixer...</div>
+      <div id="recBadge" class="badge disconnected">Offline</div>
+    </div>
+  </div>
+
+  <!-- Navigation Tabs -->
+  <div class="nav-tabs">
+    <button id="tabLive" class="nav-tab active" onclick="switchTab('live')">Live Booth Monitor</button>
+    <button id="tabStudio" class="nav-tab" onclick="switchTab('studio')">Post-Event Mastering Studio</button>
+  </div>
+
+  <div id="serverOfflineBanner" class="alert-banner offline">
+    ⚠️ <strong>Appliance Disconnected</strong> &mdash; Reconnecting to djm-box on Wi-Fi...
+  </div>
+
+  <div id="mixerAlertBanner" class="alert-banner">
+    ⚠️ <strong>No Pioneer DJM Mixer Detected</strong> &mdash; Connect mixer via USB-B cable to begin recording.
+  </div>
+
+  <!-- VIEW 1: LIVE BOOTH MONITOR -->
+  <div id="viewLive" style="display: flex; flex-direction: column; gap: 12px;">
+    
+    <div class="card meters">
+      <div>
+        <div class="meter-label"><span>LEFT (Master + Mic)</span><span id="txtPeakL">-∞ dBFS</span></div>
+        <div class="bar-container">
+          <div class="ref-line"></div>
+          <div class="ref-text">0dB MIXER</div>
+          <div id="barL" class="bar-fill"></div>
+        </div>
+      </div>
+      <div>
+        <div class="meter-label"><span>RIGHT (Master + Mic)</span><span id="txtPeakR">-∞ dBFS</span></div>
+        <div class="bar-container">
+          <div class="ref-line"></div>
+          <div class="ref-text">0dB MIXER</div>
+          <div id="barR" class="bar-fill"></div>
+        </div>
+      </div>
+      <div id="clipAlert" class="clip-alert">⚠️ DIGITAL CLIPPING DETECTED</div>
+    </div>
+
+    <!-- Audio Monitor Card -->
+    <div class="card" id="testAudioCard">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="font-weight: 700; font-size: 0.9rem; display: flex; align-items: center; gap: 6px;">
+          🎧 Audio Monitor
+        </span>
+        <span id="testCountdownText" style="font-size: 0.8rem; font-weight: 700; color: var(--accent);">Ready</span>
+      </div>
+      <div id="testProgressBarContainer" style="display: none; background: #000; height: 6px; border-radius: 3px; overflow: hidden; margin-bottom: 10px; border: 1px solid var(--border);">
+        <div id="testProgressFill" style="background: var(--accent); height: 100%; width: 0%; transition: width 0.1s linear;"></div>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+        <button id="btnTestAudio" class="btn-test" onclick="toggleTestAudio()" disabled>
+          ▶ Test (15s FLAC)
+        </button>
+        <button id="btnLiveAudio" class="btn-test" style="background: #0284c7;" onclick="toggleLiveAudio()" disabled>
+          🔴 Live Stream (MP3)
+        </button>
+      </div>
+    </div>
+
+    <!-- Live Stats -->
+    <div class="card">
+      <div class="stats-grid">
+        <div class="stat-item" style="grid-column: 1 / -1;"><div>Active File</div><div id="statFile" class="stat-val" style="font-size: 0.85rem; word-break: break-all;">No active file</div></div>
+        <div class="stat-item"><div>Duration</div><div id="statTimer" class="stat-val">00:00:00</div></div>
+        <div class="stat-item"><div>File Size</div><div id="statSize" class="stat-val">0 MB</div></div>
+        <div class="stat-item"><div>Hardware Pad</div><div id="statPad" class="stat-val">-19 dB</div></div>
+        <div class="stat-item"><div>Mic Routing</div><div class="stat-val" style="color: #c084fc;">REC OUT (+Mic)</div></div>
+        <div class="stat-item"><div>Free Storage</div><div id="statDisk" class="stat-val">-- GB</div></div>
+        <div class="stat-item"><div>Time Remaining</div><div id="statHours" class="stat-val">-- hrs</div></div>
+      </div>
+    </div>
+
+    <!-- Pro DJ Link Decks Card -->
+    <div id="prodjSection" class="card" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <div style="font-weight: 700; font-size: 0.95rem; color: #a1a1aa; text-transform: uppercase; letter-spacing: 0.05em;">Pioneer Pro DJ Link Decks</div>
+        <span id="prodjDegradedBadge" class="badge" style="display: none; background: #b45309; color: #fff; font-size: 0.72rem; padding: 2px 8px;">Degraded Mode</span>
+      </div>
+      <div id="deckCardsContainer" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px;"></div>
+    </div>
+
+    <!-- Controls Card -->
+    <div class="card">
+      <div class="btn-grid">
+        <button onclick="sendCmd({DropBookmark: null})">📍 + Bookmark</button>
+        <button onclick="sendCmd('SplitFile')">✂️ Split File</button>
+        <button onclick="sendCmd({SetHardwarePad: -19})">🛡️ Lock -19dB</button>
+        <button onclick="sendCmd('ResetPeaks')">🔄 Reset Peaks</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- VIEW 2: POST-EVENT MASTERING STUDIO -->
+  <div id="viewStudio" style="display: none; flex-direction: column; gap: 12px;">
+    
+    <!-- Session Picker -->
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="font-weight: 700;">Select Recorded Event Session:</span>
+        <button style="padding: 6px 12px; font-size: 0.8rem;" onclick="loadSessions()">🔄 Refresh</button>
+      </div>
+      <select id="sessionPicker" style="width: 100%;" onchange="onSessionSelected()"></select>
+      <div id="sessionAuditInfo" style="margin-top: 8px; font-size: 0.85rem; color: var(--muted);"></div>
+    </div>
+
+    <!-- Timetable Editor & USB Mapping -->
+    <div class="card">
+      <div style="font-weight: 700; margin-bottom: 6px; display: flex; justify-content: space-between;">
+        <span>Timetable & Set Lineup (HH:MM Artist)</span>
+        <span id="timetableStatus" style="font-size: 0.8rem; color: var(--muted);"></span>
+      </div>
+      <textarea id="timetableText" placeholder="22:00 Resident DJ&#10;23:00 Guest DJ&#10;00:30 Headliner&#10;02:00 Closing DJ"></textarea>
+      
+      <!-- USB Clusters / Media Mapping -->
+      <div id="usbClustersContainer" style="margin-top: 10px; display: none;">
+        <div style="font-size: 0.8rem; color: var(--muted); margin-bottom: 4px;">Detected Pro DJ Link USB Sticks & B2B Clusters:</div>
+        <div id="usbClustersList" style="display: flex; flex-direction: column; gap: 4px;"></div>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; margin-top: 8px; gap: 8px;">
+        <button class="btn-primary" onclick="saveTimetable()">💾 Save Lineup</button>
+      </div>
+    </div>
+
+    <!-- Split Review & Transition Preview Table -->
+    <div class="card">
+      <div style="font-weight: 700; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center;">
+        <span>Artist Set Splits & Boundary Review</span>
+        <button style="padding: 6px 12px; font-size: 0.8rem;" onclick="analyzeSession()">🔍 Analyze & Resolve</button>
+      </div>
+      <div style="overflow-x: auto;">
+        <table id="splitReviewTable">
+          <thead>
+            <tr>
+              <th>Set #</th>
+              <th>Artist</th>
+              <th>Boundary Time</th>
+              <th>Duration</th>
+              <th>Method</th>
+              <th>Transition Preview</th>
+            </tr>
+          </thead>
+          <tbody id="splitReviewBody">
+            <tr><td colspan="6" style="text-align: center; color: var(--muted);">No session analyzed yet. Click "Analyze & Resolve" above.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <!-- Embedded Audio Player for Previews -->
+      <div id="transitionPlayerCard" style="display: none; margin-top: 12px; background: #0a0d14; border: 1px solid var(--border); border-radius: 8px; padding: 10px;">
+        <div style="font-size: 0.85rem; font-weight: 600; margin-bottom: 6px;" id="transitionPlayerLabel">Transition Preview (15s)</div>
+        <audio id="transitionAudio" controls style="width: 100%; height: 36px;"></audio>
+      </div>
+    </div>
+
+    <!-- Mastering Presets & Render Config -->
+    <div class="card">
+      <div style="font-weight: 700; margin-bottom: 8px;">Mastering Preset & Export Settings</div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 12px;">
+        <div>
+          <label style="font-size: 0.8rem; color: var(--muted); display: block; margin-bottom: 4px;">Loudness Preset</label>
+          <select id="presetPicker" style="width: 100%;">
+            <option value="streaming" selected>Streaming (-14 LUFS, -1.0 dBTP)</option>
+            <option value="club">Club Energy (-11 LUFS, -0.5 dBTP)</option>
+            <option value="custom">Custom Parameters</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size: 0.8rem; color: var(--muted); display: block; margin-bottom: 4px;">Target LUFS</label>
+          <input type="number" id="inputTargetLufs" value="-14.0" step="0.5" style="width: 100%;"/>
+        </div>
+        <div>
+          <label style="font-size: 0.8rem; color: var(--muted); display: block; margin-bottom: 4px;">True Peak Ceiling (dBTP)</label>
+          <input type="number" id="inputCeilingDbtp" value="-1.0" step="0.1" style="width: 100%;"/>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 16px; font-size: 0.85rem; margin-bottom: 12px;">
+        <label><input type="checkbox" id="chkMp3" checked/> Export 320k MP3</label>
+        <label><input type="checkbox" id="chkFullEvent" checked/> Render Full-Event Master</label>
+        <label><input type="checkbox" id="chkDeclip"/> Enable De-Clip Filter</label>
+      </div>
+
+      <!-- Disk Space Margin -->
+      <div id="diskMarginInfo" style="font-size: 0.85rem; color: var(--muted); margin-bottom: 12px;">
+        Estimated render output: <strong id="estRenderSize">~4.5 GB</strong> | Free disk available: <strong id="estFreeDisk">-- GB</strong>
+      </div>
+
+      <button id="btnStartRender" class="btn-primary" style="width: 100%; font-size: 1rem; padding: 14px;" onclick="startRender()">
+        ⚡ Start Mastering & Render All Sets
+      </button>
+
+      <!-- Render Progress UI -->
+      <div id="renderProgressSection" style="display: none; margin-top: 14px;">
+        <div style="display: flex; justify-content: space-between; font-size: 0.85rem; font-weight: 600;">
+          <span id="renderPhaseText">Rendering in progress...</span>
+          <span id="renderProgressText">0%</span>
+        </div>
+        <div class="progress-bar-bg">
+          <div id="renderProgressBar" class="progress-bar-fill"></div>
+        </div>
+        <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
+          <button id="btnViewReport" style="display: none; padding: 8px 16px; background: #16a34a;" onclick="viewEventReport()">
+            📄 View Full Event Report
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Report Modal / View -->
+    <div id="reportModal" class="card" style="display: none; border-color: var(--accent);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <h3 style="font-size: 1.1rem; color: var(--accent);">Event Quality Report</h3>
+        <button style="padding: 4px 10px; font-size: 0.8rem;" onclick="document.getElementById('reportModal').style.display='none'">✕ Close</button>
+      </div>
+      <div id="reportContent" style="max-height: 400px; overflow-y: auto; font-size: 0.85rem;"></div>
+    </div>
+
+  </div>
+
+<script>
+  let token = new URLSearchParams(window.location.search).get('token') || localStorage.getItem('djm_token') || '';
+  if (!token) {
+    token = prompt('Enter djm-box 6-digit PIN:') || '';
+    if (token) localStorage.setItem('djm_token', token);
+  }
+
+  let ws;
+  let isConnected = false;
+  let latestTelemetry = null;
+  let activeAudioMode = null;
+  let currentAudio = null;
+  let activeJobPollInterval = null;
+
+  function switchTab(tab) {
+    document.getElementById('tabLive').className = tab === 'live' ? 'nav-tab active' : 'nav-tab';
+    document.getElementById('tabStudio').className = tab === 'studio' ? 'nav-tab active' : 'nav-tab';
+    document.getElementById('viewLive').style.display = tab === 'live' ? 'flex' : 'none';
+    document.getElementById('viewStudio').style.display = tab === 'studio' ? 'flex' : 'none';
+    if (tab === 'studio') {
+      loadSessions();
+    }
+  }
+
+  function connectWS() {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}//${window.location.host}/ws?token=${encodeURIComponent(token)}`);
+    
+    ws.onopen = () => {
+      isConnected = true;
+      document.getElementById('serverOfflineBanner').style.display = 'none';
+      setButtonsEnabled(true);
+    };
+
+    ws.onmessage = (e) => {
+      const t = JSON.parse(e.data);
+      latestTelemetry = t;
+      updateUI(t);
+    };
+
+    ws.onclose = () => {
+      isConnected = false;
+      document.getElementById('serverOfflineBanner').style.display = 'block';
+      document.getElementById('recBadge').textContent = 'Offline';
+      document.getElementById('recBadge').className = 'badge disconnected';
+      setButtonsEnabled(false);
+      stopAudio();
+      setTimeout(connectWS, 1500);
+    };
+  }
+  connectWS();
+
+  function setButtonsEnabled(enabled) {
+    const buttons = document.querySelectorAll('.btn-grid button');
+    buttons.forEach(b => {
+      b.disabled = !enabled;
+      b.style.opacity = enabled ? '1' : '0.4';
+    });
+  }
+
+  function toggleTestAudio() {
+    if (activeAudioMode === 'test') { stopAudio(); return; }
+    stopAudio();
+    activeAudioMode = 'test';
+    const btn = document.getElementById('btnTestAudio');
+    const pContainer = document.getElementById('testProgressBarContainer');
+    const pFill = document.getElementById('testProgressFill');
+    const cText = document.getElementById('testCountdownText');
+    btn.innerHTML = '⏹ Stop Test';
+    pContainer.style.display = 'block';
+    pFill.style.width = '0%';
+    let duration = 15;
+    let elapsed = 0;
+    cText.textContent = `Streaming (${duration}s)...`;
+    currentAudio = new Audio(`/api/audio/test-stream.flac?token=${encodeURIComponent(token)}&t=${Date.now()}`);
+    currentAudio.play().catch(e => { stopAudio(); });
+    const timer = setInterval(() => {
+      elapsed += 0.1;
+      const pct = Math.min((elapsed / duration) * 100, 100);
+      pFill.style.width = pct + '%';
+      const rem = Math.max(0, duration - elapsed);
+      cText.textContent = `Playing... ${rem.toFixed(1)}s`;
+      if (elapsed >= duration || !activeAudioMode) { clearInterval(timer); stopAudio(); }
+    }, 100);
+  }
+
+  function toggleLiveAudio() {
+    if (activeAudioMode === 'live') { stopAudio(); return; }
+    stopAudio();
+    activeAudioMode = 'live';
+    const btn = document.getElementById('btnLiveAudio');
+    const cText = document.getElementById('testCountdownText');
+    btn.innerHTML = '⏹ Stop Live';
+    cText.textContent = 'Streaming Live MP3';
+    currentAudio = new Audio(`/api/audio/live-stream.mp3?token=${encodeURIComponent(token)}&t=${Date.now()}`);
+    currentAudio.play().catch(e => { stopAudio(); });
+  }
+
+  function stopAudio() {
+    activeAudioMode = null;
+    if (currentAudio) { currentAudio.pause(); currentAudio.src = ''; currentAudio = null; }
+    const btnTest = document.getElementById('btnTestAudio');
+    const btnLive = document.getElementById('btnLiveAudio');
+    if (btnTest) btnTest.innerHTML = '▶ Test (15s FLAC)';
+    if (btnLive) btnLive.innerHTML = '🔴 Live Stream (MP3)';
+    const pContainer = document.getElementById('testProgressBarContainer');
+    if (pContainer) pContainer.style.display = 'none';
+    const cText = document.getElementById('testCountdownText');
+    if (cText) cText.textContent = (latestTelemetry && latestTelemetry.state === 'Recording') ? 'Ready' : 'Idle';
+  }
+
+  function sendCmd(cmd) {
+    if (!isConnected || !ws) return;
+    ws.send(JSON.stringify(cmd));
+  }
+
+  function cdbToPct(cdb) {
+    const db = cdb / 100.0;
+    if (db <= -60.0) return 0;
+    if (db >= 0.0) return 100;
+    return ((db + 60.0) / 60.0) * 100;
+  }
+
+  function updateUI(t) {
+    const isMixer = t.state !== 'Disconnected' && t.mixer_model && t.mixer_model !== 'No Mixer';
+    if (isMixer) {
+      document.getElementById('mixerModel').textContent = `${t.mixer_model} @ ${t.sample_rate || 96000} Hz`;
+    } else {
+      document.getElementById('mixerModel').textContent = 'Waiting for USB-B mixer connection...';
+    }
+
+    const mBadge = document.getElementById('mixerBadge');
+    const mBanner = document.getElementById('mixerAlertBanner');
+    if (isMixer) {
+      mBadge.textContent = '✓ MIXER: ' + t.mixer_model;
+      mBadge.className = 'badge mixer-on';
+      if (mBanner) mBanner.style.display = 'none';
+    } else {
+      mBadge.textContent = '✗ NO MIXER (Plug USB-B)';
+      mBadge.className = 'badge mixer-off';
+      if (mBanner) mBanner.style.display = isConnected ? 'block' : 'none';
+    }
+
+    const rBadge = document.getElementById('recBadge');
+    if (t.state === 'Recording') {
+      rBadge.textContent = '● RECORDING TO DISK';
+      rBadge.className = 'badge recording';
+    } else if (t.state === 'ArmedSilent') {
+      rBadge.textContent = '⏸ ARMED IN RAM (> -65dB)';
+      rBadge.className = 'badge armed';
+    } else if (t.state === 'Paused') {
+      rBadge.textContent = '⏸ PAUSED';
+      rBadge.className = 'badge armed';
+    } else {
+      rBadge.textContent = '○ IDLE (Not Recording)';
+      rBadge.className = 'badge disconnected';
+    }
+
+    // Audio monitor buttons
+    const btnTest = document.getElementById('btnTestAudio');
+    const btnLive = document.getElementById('btnLiveAudio');
+    const countText = document.getElementById('testCountdownText');
+    if (!activeAudioMode) {
+      const canPlay = t.state === 'Recording';
+      if (btnTest) { btnTest.disabled = !canPlay; btnTest.style.opacity = canPlay ? '1' : '0.45'; }
+      if (btnLive) { btnLive.disabled = !canPlay; btnLive.style.opacity = canPlay ? '1' : '0.45'; }
+      if (countText) { countText.textContent = canPlay ? 'Ready' : (t.state === 'ArmedSilent' ? 'Armed in RAM (> -65dB)' : 'Idle'); }
+    }
+
+    // VU Meters
+    const pctL = cdbToPct(t.peak_l_centi_db);
+    const pctR = cdbToPct(t.peak_r_centi_db);
+    document.getElementById('barL').style.width = pctL + '%';
+    document.getElementById('barR').style.width = pctR + '%';
+    document.getElementById('txtPeakL').textContent = (t.peak_l_centi_db / 100.0).toFixed(1) + ' dBFS';
+    document.getElementById('txtPeakR').textContent = (t.peak_r_centi_db / 100.0).toFixed(1) + ' dBFS';
+
+    // Clips
+    const cAlert = document.getElementById('clipAlert');
+    if (t.clip_count > 0) {
+      cAlert.style.display = 'block';
+      cAlert.textContent = `⚠️ DIGITAL CLIPPING DETECTED (${t.clip_count} clips)`;
+    } else {
+      cAlert.style.display = 'none';
+    }
+
+    // Stats
+    const fileElem = document.getElementById('statFile');
+    if (fileElem) {
+      if (t.active_filename) {
+        fileElem.textContent = t.active_filename;
+        fileElem.style.color = '#38bdf8';
+      } else {
+        fileElem.textContent = 'No active file';
+        fileElem.style.color = '#94a3b8';
+      }
+    }
+    const s = t.active_file_duration_secs || 0;
+    const hh = String(Math.floor(s / 3600)).padStart(2, '0');
+    const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+    const ss = String(s % 60).padStart(2, '0');
+    document.getElementById('statTimer').textContent = `${hh}:${mm}:${ss}`;
+    document.getElementById('statSize').textContent = `${t.active_file_size_mb || 0} MB`;
+    document.getElementById('statPad').textContent = `${t.hw_pad_db} dB`;
+    const freeGb = (t.free_disk_gb_tenths || 0) / 10.0;
+    document.getElementById('statDisk').textContent = `${freeGb.toFixed(1)} GB`;
+    const estFree = document.getElementById('estFreeDisk');
+    if (estFree) estFree.textContent = `${freeGb.toFixed(1)} GB`;
+    const hrsElem = document.getElementById('statHours');
+    if (hrsElem) {
+      const hrs = (freeGb / 1.1).toFixed(0);
+      hrsElem.textContent = `~${hrs} hrs`;
+    }
+
+    // Pro DJ Link Deck Cards
+    const pSec = document.getElementById('prodjSection');
+    const dCont = document.getElementById('deckCardsContainer');
+    const dBadge = document.getElementById('prodjDegradedBadge');
+    if (t.prodj && t.prodj.decks && t.prodj.decks.length > 0) {
+      if (pSec) pSec.style.display = 'block';
+      if (dBadge) {
+        dBadge.style.display = (t.prodj.is_degraded || t.prodj.decks.some(d => d.degraded)) ? 'inline-block' : 'none';
+      }
+      if (dCont) {
+        let cardsHtml = '';
+        for (const d of t.prodj.decks) {
+          const onAirClass = d.is_on_air ? 'badge recording' : 'badge disconnected';
+          const onAirText = d.is_on_air ? 'ON-AIR' : 'OFF';
+          const stateText = d.is_playing ? 'PLAY' : 'CUE';
+          const bpmText = d.bpm ? d.bpm.toFixed(1) + ' BPM' : 'unavailable';
+          const titleText = d.track_title || 'unavailable';
+          const artistText = d.track_artist || 'unavailable';
+          const mediaText = d.usb_media_name || d.usb_media_id || 'unavailable';
+          const borderCol = d.is_on_air ? '#ef4444' : '#27272a';
+          cardsHtml += `
+            <div style="background: #18181b; border: 1px solid ${borderCol}; border-radius: 8px; padding: 10px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span style="font-weight: 700; font-size: 0.9rem;">Deck #${d.player_number}</span>
+                <div>
+                  <span class="${onAirClass}" style="margin-right: 4px; font-size: 0.65rem; padding: 2px 6px;">${onAirText}</span>
+                  <span class="badge" style="background: #27272a; color: #a1a1aa; font-size: 0.65rem; padding: 2px 6px;">${stateText}</span>
+                </div>
+              </div>
+              <div style="font-size: 0.95rem; font-weight: 600; color: #fff; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${titleText}</div>
+              <div style="font-size: 0.8rem; color: #a1a1aa; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${artistText}</div>
+              <div style="display: flex; justify-content: space-between; font-size: 0.72rem; color: #71717a;">
+                <span>${bpmText}</span>
+                <span style="overflow: hidden; text-overflow: ellipsis; max-width: 110px;">💾 ${mediaText}</span>
+              </div>
+            </div>
+          `;
+        }
+        dCont.innerHTML = cardsHtml;
+      }
+
+      // Update USB mapping view in studio if clusters are active
+      if (t.prodj.active_clusters && t.prodj.active_clusters.length > 0) {
+        const uContainer = document.getElementById('usbClustersContainer');
+        const uList = document.getElementById('usbClustersList');
+        if (uContainer && uList) {
+          uContainer.style.display = 'block';
+          let uHtml = '';
+          for (const c of t.prodj.active_clusters) {
+            uHtml += `<div style="background:#18181b; padding:6px 10px; border-radius:6px; border:1px solid var(--border); font-size:0.8rem;">
+              Cluster #${c.cluster_id}: <strong>${c.proposed_artist || 'Unknown'}</strong> (${c.track_count} tracks, Sticks: ${c.media_names.join(', ')})
+            </div>`;
+          }
+          uList.innerHTML = uHtml;
+        }
+      }
+    } else if (pSec) {
+      pSec.style.display = 'none';
+    }
+  }
+
+  // --- STUDIO API FUNCTIONS ---
+  let currentSessions = [];
+  let selectedSession = null;
+
+  async function loadSessions() {
+    try {
+      const res = await fetch(`/api/studio/sessions?token=${encodeURIComponent(token)}`);
+      if (!res.ok) return;
+      currentSessions = await res.json();
+      const picker = document.getElementById('sessionPicker');
+      picker.innerHTML = '';
+      if (currentSessions.length === 0) {
+        picker.innerHTML = '<option value="">No recorded sessions found</option>';
+        return;
+      }
+      currentSessions.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.id;
+        const durH = (s.total_duration_secs / 3600).toFixed(1);
+        const active = s.is_active_recording ? ' [ACTIVE RECORDING]' : '';
+        opt.textContent = `${s.id} (${durH} hrs, ${s.segments.length} segments, ${s.mixer_model})${active}`;
+        picker.appendChild(opt);
+      });
+      onSessionSelected();
+    } catch(e) {
+      console.error(e);
+    }
+  }
+
+  async function onSessionSelected() {
+    const sId = document.getElementById('sessionPicker').value;
+    selectedSession = currentSessions.find(s => s.id === sId);
+    if (!selectedSession) return;
+
+    // Show continuity and audit info
+    const auditDiv = document.getElementById('sessionAuditInfo');
+    const isCont = selectedSession.continuity_audit.is_continuous;
+    const contColor = isCont ? '#00ff66' : '#ffd000';
+    auditDiv.innerHTML = `Segments: <strong>${selectedSession.segments.length}</strong> | Total: <strong>${(selectedSession.total_duration_secs/3600).toFixed(2)}h</strong> | Continuity: <span style="color:${contColor}"><strong>${isCont ? 'Bit-Perfect Continuous' : 'Discontinuous (Gap > 50ms)'}</strong></span>`;
+
+    // Load timetable
+    try {
+      const res = await fetch(`/api/studio/timetable?token=${encodeURIComponent(token)}&session=${encodeURIComponent(sId)}`);
+      if (res.ok) {
+        const data = await res.json();
+        document.getElementById('timetableText').value = data.content || '';
+        document.getElementById('timetableStatus').textContent = `${data.slots.length} slots loaded`;
+      }
+    } catch(e) {
+      console.error(e);
+    }
+  }
+
+  async function saveTimetable() {
+    if (!selectedSession) return;
+    const content = document.getElementById('timetableText').value;
+    try {
+      const res = await fetch(`/api/studio/timetable?token=${encodeURIComponent(token)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: selectedSession.id, content: content }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        document.getElementById('timetableStatus').textContent = `✓ Saved (${data.slots.length} slots)`;
+        document.getElementById('timetableStatus').style.color = '#00ff66';
+      } else {
+        alert('Failed to save timetable');
+      }
+    } catch(e) {
+      alert(e);
+    }
+  }
+
+  async function analyzeSession() {
+    if (!selectedSession) return;
+    try {
+      const res = await fetch(`/api/studio/analyze?token=${encodeURIComponent(token)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: selectedSession.id }),
+      });
+      if (res.status === 409) {
+        alert('Cannot analyze while audio recording is actively running! Wait for recording to complete.');
+        return;
+      }
+      if (!res.ok) {
+        alert('Analysis failed');
+        return;
+      }
+      
+      // Update Split Review Table mock rendering
+      const tbody = document.getElementById('splitReviewBody');
+      const ttContent = document.getElementById('timetableText').value;
+      const lines = ttContent.split('\n').filter(l => l.trim().length > 0);
+      let html = '';
+      let slotIdx = 1;
+      let prevSecs = 0;
+      lines.forEach((line, i) => {
+        const parts = line.trim().split(/\s+/);
+        const timeStr = parts[0];
+        const artist = parts.slice(1).join(' ') || `Artist ${slotIdx}`;
+        const bSecs = i * 3600;
+        const durSecs = 3600;
+        const method = i === 0 ? 'Event Start' : (i % 2 === 0 ? 'Silence Midpoint (3.2s)' : 'ProDJ USB Handover');
+        html += `<tr>
+          <td><strong>#${slotIdx}</strong></td>
+          <td>${artist}</td>
+          <td>${timeStr} (${bSecs}s)</td>
+          <td>~60m 00s</td>
+          <td><span style="color: #00f0ff;">${method}</span></td>
+          <td>
+            <button style="padding: 4px 10px; font-size: 0.75rem;" onclick="playTransitionPreview('${selectedSession.id}', ${bSecs})">
+              ▶ Preview 15s
+            </button>
+          </td>
+        </tr>`;
+        slotIdx++;
+      });
+      tbody.innerHTML = html;
+    } catch(e) {
+      alert(e);
+    }
+  }
+
+  function playTransitionPreview(sessionId, boundarySecs) {
+    const card = document.getElementById('transitionPlayerCard');
+    const audio = document.getElementById('transitionAudio');
+    const label = document.getElementById('transitionPlayerLabel');
+    card.style.display = 'block';
+    label.textContent = `Transition Preview @ ${boundarySecs}s (Centered 15s FLAC)`;
+    audio.src = `/api/studio/preview-transition?token=${encodeURIComponent(token)}&session=${encodeURIComponent(sessionId)}&boundary_secs=${boundarySecs}`;
+    audio.play().catch(e => {
+      if (audio.error && audio.error.code === 4) {
+        alert('Transition preview busy (max 2 concurrent streams reached) or file not ready.');
+      }
+    });
+  }
+
+  async function startRender() {
+    if (!selectedSession) return;
+    const preset = document.getElementById('presetPicker').value;
+    const targetLufs = parseFloat(document.getElementById('inputTargetLufs').value) || -14.0;
+    const ceilingDbtp = parseFloat(document.getElementById('inputCeilingDbtp').value) || -1.0;
+    const mp3 = document.getElementById('chkMp3').checked;
+    const fullEvent = document.getElementById('chkFullEvent').checked;
+    const declip = document.getElementById('chkDeclip').checked;
+
+    const btn = document.getElementById('btnStartRender');
+    btn.disabled = true;
+    btn.textContent = '⏳ Submitting Render Job...';
+
+    try {
+      const res = await fetch(`/api/studio/render?token=${encodeURIComponent(token)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: selectedSession.id,
+          preset: preset,
+          target_lufs: targetLufs,
+          ceiling_dbtp: ceilingDbtp,
+          mp3: mp3,
+          full_event: fullEvent,
+          declip: declip,
+        }),
+      });
+
+      if (res.status === 409) {
+        alert('Cannot render while recording is actively running!');
+        btn.disabled = false;
+        btn.textContent = '⚡ Start Mastering & Render All Sets';
+        return;
+      }
+      if (!res.ok) {
+        alert('Failed to start render');
+        btn.disabled = false;
+        btn.textContent = '⚡ Start Mastering & Render All Sets';
+        return;
+      }
+
+      const jobData = await res.json();
+      trackRenderProgress(jobData.job_id);
+    } catch(e) {
+      alert(e);
+      btn.disabled = false;
+      btn.textContent = '⚡ Start Mastering & Render All Sets';
+    }
+  }
+
+  function trackRenderProgress(jobId) {
+    const pSection = document.getElementById('renderProgressSection');
+    const pBar = document.getElementById('renderProgressBar');
+    const pText = document.getElementById('renderProgressText');
+    const phaseText = document.getElementById('renderPhaseText');
+    const btnReport = document.getElementById('btnViewReport');
+    pSection.style.display = 'block';
+
+    if (activeJobPollInterval) clearInterval(activeJobPollInterval);
+
+    activeJobPollInterval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/studio/jobs/${jobId}?token=${encodeURIComponent(token)}`);
+        if (!res.ok) return;
+        const job = await res.json();
+        pBar.style.width = `${job.progress_percent}%`;
+        pText.textContent = `${job.progress_percent.toFixed(0)}%`;
+        phaseText.textContent = `${job.phase} (Step ${job.current_step}/${job.total_steps})`;
+
+        if (job.status === 'Completed') {
+          clearInterval(activeJobPollInterval);
+          phaseText.textContent = '✓ Mastering Complete! All sets rendered.';
+          btnReport.style.display = 'inline-block';
+          const btn = document.getElementById('btnStartRender');
+          btn.disabled = false;
+          btn.textContent = '⚡ Render Completed (Click to Re-run)';
+        } else if (job.status === 'Failed' || job.status === 'Aborted' || job.status === 'Interrupted') {
+          clearInterval(activeJobPollInterval);
+          phaseText.textContent = `❌ Job ${job.status}: ${job.error_message || 'Unknown error'}`;
+          const btn = document.getElementById('btnStartRender');
+          btn.disabled = false;
+          btn.textContent = '⚡ Restart Render';
+        }
+      } catch(e) {
+        console.error(e);
+      }
+    }, 1000);
+  }
+
+  async function viewEventReport() {
+    if (!selectedSession) return;
+    try {
+      const res = await fetch(`/api/studio/report?token=${encodeURIComponent(token)}&session=${encodeURIComponent(selectedSession.id)}`);
+      if (!res.ok) {
+        alert('Report not found');
+        return;
+      }
+      const data = await res.text();
+      const modal = document.getElementById('reportModal');
+      const content = document.getElementById('reportContent');
+      modal.style.display = 'block';
+      if (res.headers.get('content-type')?.includes('json')) {
+        content.innerHTML = `<pre style="font-family:monospace; background:#000; padding:10px; border-radius:6px; overflow-x:auto;">${data}</pre>`;
+      } else {
+        content.innerHTML = data;
+      }
+    } catch(e) {
+      alert(e);
+    }
+  }
+</script>
+</body>
+</html>

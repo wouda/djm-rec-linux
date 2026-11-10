@@ -12,7 +12,7 @@ pub enum ConfigError {
     Serialize(#[from] toml::ser::Error),
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     #[serde(default)]
     pub storage: StorageConfig,
@@ -24,18 +24,6 @@ pub struct AppConfig {
     pub remote: RemoteConfig,
     #[serde(default)]
     pub audio: AudioConfig,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            storage: StorageConfig::default(),
-            splitting: SplittingConfig::default(),
-            gain_and_hardware: GainAndHardwareConfig::default(),
-            remote: RemoteConfig::default(),
-            audio: AudioConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

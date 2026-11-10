@@ -26,6 +26,7 @@ impl SessionLog {
         Ok(logger)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn log_start(
         &mut self,
         flac_path: &Path,
@@ -47,10 +48,10 @@ impl SessionLog {
 
     pub fn log_clip(
         &mut self,
-        new_clips: u16,
+        new_clips: u64,
         peak_l_db: f32,
         peak_r_db: f32,
-        total_clips: u16,
+        total_clips: u64,
     ) -> io::Result<()> {
         self.log_event(
             "DIGITAL_CLIP",
@@ -61,6 +62,7 @@ impl SessionLog {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn log_progress(
         &mut self,
         mb: u64,
@@ -69,7 +71,7 @@ impl SessionLog {
         peak_r_db: f32,
         rms_l_db: f32,
         rms_r_db: f32,
-        clips: u16,
+        clips: u64,
         pad_db: i8,
         free_gb: f32,
     ) -> io::Result<()> {
@@ -91,7 +93,7 @@ impl SessionLog {
         elapsed_secs: u64,
         total_mb: u64,
         peak_db: f32,
-        clips: u16,
+        clips: u64,
     ) -> io::Result<()> {
         let hh = elapsed_secs / 3600;
         let mm = (elapsed_secs % 3600) / 60;
@@ -168,15 +170,27 @@ fn chrono_now_string() -> String {
         nix::libc::localtime_r(&time_t, &mut tm);
     }
 
+    let gmtoff = tm.tm_gmtoff;
+    let (sign, total_secs) = if gmtoff >= 0 {
+        ('+', gmtoff)
+    } else {
+        ('-', -gmtoff)
+    };
+    let off_hours = (total_secs / 3600) as u32;
+    let off_mins = ((total_secs % 3600) / 60) as u32;
+
     format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}{}{:02}:{:02}",
         tm.tm_year + 1900,
         tm.tm_mon + 1,
         tm.tm_mday,
         tm.tm_hour,
         tm.tm_min,
         tm.tm_sec,
-        millis
+        millis,
+        sign,
+        off_hours,
+        off_mins
     )
 }
 
@@ -210,5 +224,36 @@ mod tests {
         assert!(log_content.contains("[SESSION_STOP]"));
 
         let _ = std::fs::remove_file(logger.path());
+    }
+
+    #[test]
+    fn test_session_log_large_clip_count() {
+        let tmp_dir = std::env::temp_dir();
+        let flac_path = tmp_dir.join("test_large_clip_session.flac");
+        let mut logger = SessionLog::new(&flac_path).unwrap();
+        
+        let large_clips = 125_482u64; // Well above u16::MAX (65535)
+        logger.log_clip(70_000, 0.0, 0.0, large_clips).unwrap();
+        logger.log_progress(100, 3600, 0.0, 0.0, -6.0, -6.0, large_clips, -19, 500.0).unwrap();
+        logger.log_stop("Test complete", 3600, 100, 0.0, large_clips).unwrap();
+
+        let log_content = std::fs::read_to_string(logger.path()).unwrap();
+        assert!(log_content.contains("Total session clips: 125482"));
+        assert!(log_content.contains("Clips: 125482"));
+        assert!(log_content.contains("Total clips: 125482"));
+
+        let _ = std::fs::remove_file(logger.path());
+    }
+
+    #[test]
+    fn test_session_log_timestamp_format() {
+        let ts = chrono_now_string();
+        // RFC 3339 with offset: YYYY-MM-DDTHH:MM:SS.mmm+HH:MM (length: 29)
+        assert_eq!(ts.len(), 29, "Timestamp should be 29 chars: {}", ts);
+        assert_eq!(&ts[10..11], "T");
+        assert_eq!(&ts[19..20], ".");
+        let sign = &ts[23..24];
+        assert!(sign == "+" || sign == "-", "Offset sign must be + or -: {}", sign);
+        assert_eq!(&ts[26..27], ":");
     }
 }

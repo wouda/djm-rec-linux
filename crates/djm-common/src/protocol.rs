@@ -59,7 +59,7 @@ pub struct Telemetry {
     pub peak_r_centi_db: i16,
     pub rms_l_centi_db: i16,
     pub rms_r_centi_db: i16,
-    pub clip_count: u16,
+    pub clip_count: u64,
     pub active_file_duration_secs: u32,
     pub active_file_size_mb: u16,
     pub free_disk_gb_tenths: u16,
@@ -75,6 +75,8 @@ pub struct Telemetry {
     pub pause_countdown_secs: Option<f32>,
     #[serde(default)]
     pub recent_logs: Vec<String>,
+    #[serde(default)]
+    pub prodj: Option<crate::prodj::ProDjTelemetry>,
 }
 
 impl Default for Telemetry {
@@ -97,6 +99,7 @@ impl Default for Telemetry {
             active_filename: None,
             pause_countdown_secs: None,
             recent_logs: Vec::new(),
+            prodj: None,
         }
     }
 }
@@ -133,8 +136,8 @@ impl Telemetry {
         LittleEndian::write_i16(&mut buf[6..8], self.rms_l_centi_db);
         LittleEndian::write_i16(&mut buf[8..10], self.rms_r_centi_db);
 
-        // Bytes 10..11: Clip count
-        LittleEndian::write_u16(&mut buf[10..12], self.clip_count);
+        // Bytes 10..11: Clip count (saturated to u16::MAX for legacy 20-byte BLE packet)
+        LittleEndian::write_u16(&mut buf[10..12], self.clip_count.min(u16::MAX as u64) as u16);
 
         // Bytes 12..15: Active file duration (seconds)
         LittleEndian::write_u32(&mut buf[12..16], self.active_file_duration_secs);
@@ -175,7 +178,7 @@ impl Telemetry {
         let rms_l_centi_db = LittleEndian::read_i16(&buf[6..8]);
         let rms_r_centi_db = LittleEndian::read_i16(&buf[8..10]);
 
-        let clip_count = LittleEndian::read_u16(&buf[10..12]);
+        let clip_count = LittleEndian::read_u16(&buf[10..12]) as u64;
         let active_file_duration_secs = LittleEndian::read_u32(&buf[12..16]);
         let active_file_size_mb = LittleEndian::read_u16(&buf[16..18]);
         let free_disk_gb_tenths = LittleEndian::read_u16(&buf[18..20]);
@@ -198,6 +201,7 @@ impl Telemetry {
             active_filename: None,
             pause_countdown_secs: None,
             recent_logs: Vec::new(),
+            prodj: None,
         })
     }
 }
@@ -362,6 +366,22 @@ pub struct PairingInfo {
     pub hotspot_password: String,
     #[serde(default)]
     pub hotspot_active: bool,
+}
+
+impl Default for PairingInfo {
+    fn default() -> Self {
+        Self {
+            name: "DJM-Box".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            token: "000000".to_string(),
+            local_ip: Some("127.0.0.1".to_string()),
+            mdns_hostname: Some("djm-box.local".to_string()),
+            hotspot_ssid: "DJM-Box-Booth".to_string(),
+            hotspot_password: "password".to_string(),
+            hotspot_active: false,
+        }
+    }
 }
 
 impl PairingInfo {
@@ -567,6 +587,24 @@ mod tests {
         assert_eq!(t1.active_file_duration_secs, t2.active_file_duration_secs);
         assert_eq!(t1.active_file_size_mb, t2.active_file_size_mb);
         assert_eq!(t1.free_disk_gb_tenths, t2.free_disk_gb_tenths);
+    }
+
+    #[test]
+    fn test_telemetry_large_clip_count() {
+        let t = Telemetry {
+            clip_count: 125_482, // > 65,535
+            ..Default::default()
+        };
+
+        // Full JSON telemetry preserves 64-bit value accurately
+        let json_str = serde_json::to_string(&t).expect("serialize json");
+        let restored: Telemetry = serde_json::from_str(&json_str).expect("deserialize json");
+        assert_eq!(restored.clip_count, 125_482);
+
+        // Packed 20-byte BLE telemetry saturates safely to u16::MAX
+        let packed = t.to_packed_bytes();
+        let unpacked = Telemetry::from_packed_bytes(&packed).expect("unpack");
+        assert_eq!(unpacked.clip_count, u16::MAX as u64);
     }
 
     #[test]

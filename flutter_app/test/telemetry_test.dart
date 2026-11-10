@@ -95,6 +95,25 @@ void main() {
       expect(recovered.activeFileSizeMb, original.activeFileSizeMb);
       expect(recovered.freeDiskGbTenths, original.freeDiskGbTenths);
     });
+
+    test('Telemetry handles large clip count (>65535) via JSON and saturates on packed binary', () {
+      final jsonMap = {
+        'state': 'Recording',
+        'clip_count': 125482,
+        'peak_l_centi_db': -100,
+        'peak_r_centi_db': -120,
+        'rms_l_centi_db': -1400,
+        'rms_r_centi_db': -1450,
+      };
+
+      final t = Telemetry.fromJson(jsonMap);
+      expect(t.clipCount, 125482);
+
+      // Verify packing clamps to 65535 rather than overflowing / throwing
+      final packed = t.toPackedBytes();
+      final unpacked = Telemetry.fromPackedBytes(packed);
+      expect(unpacked.clipCount, 65535);
+    });
   });
 
   group('Control Commands Binary Serialization', () {

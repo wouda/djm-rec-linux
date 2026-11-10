@@ -12,6 +12,7 @@ pub struct StreamMetadata {
     pub session_id: String,
     pub start_time_utc: String,
     pub sample_offset: u64,
+    pub master_segment_file: Option<String>,
 }
 
 pub struct FlacWriter {
@@ -199,13 +200,15 @@ impl FlacWriter {
 
         if self.target_path.exists() {
             if let Some(ref meta) = self.metadata {
-                let status = std::process::Command::new("metaflac")
-                    .arg(format!("--set-tag=STREAM_TYPE={}", meta.stream_type))
+                let mut cmd = std::process::Command::new("metaflac");
+                cmd.arg(format!("--set-tag=STREAM_TYPE={}", meta.stream_type))
                     .arg(format!("--set-tag=SESSION_ID={}", meta.session_id))
                     .arg(format!("--set-tag=START_TIME_UTC={}", meta.start_time_utc))
-                    .arg(format!("--set-tag=SAMPLE_OFFSET={}", meta.sample_offset))
-                    .arg(&self.target_path)
-                    .status();
+                    .arg(format!("--set-tag=SAMPLE_OFFSET={}", meta.sample_offset));
+                if let Some(ref master_file) = meta.master_segment_file {
+                    cmd.arg(format!("--set-tag=MASTER_SEGMENT_FILE={}", master_file));
+                }
+                let status = cmd.arg(&self.target_path).status();
                 if let Err(e) = status {
                     warn!("metaflac tag writing skipped or failed: {}", e);
                 }
@@ -308,6 +311,7 @@ mod tests {
             session_id: "test-session-123".to_string(),
             start_time_utc: "2026-10-25T18:00:00Z".to_string(),
             sample_offset: 96000,
+            master_segment_file: Some("master_pt01.flac".to_string()),
         });
 
         let samples = vec![(1000, -1000); 1000];

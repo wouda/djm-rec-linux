@@ -1,0 +1,27 @@
+[package]
+name = "djm-prodj"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "djm-prodj"
+path = "src/main.rs"
+
+[lib]
+name = "djm_prodj"
+path = "src/lib.rs"
+
+[dependencies]
+djm-common = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+byteorder = { workspace = true }
+binrw = "0.14"
+rekordcrate = { version = "0.3.0", default-features = false }

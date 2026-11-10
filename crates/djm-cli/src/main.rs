@@ -1,3 +1,4 @@
+pub mod process;
 pub mod setup;
 
 use anyhow::Result;
@@ -29,6 +30,16 @@ enum HotspotAction {
     Off,
     /// Query current Wi-Fi hotspot status
     Status,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProdjAction {
+    /// Show live status summary, settling state, and virtual player allocation
+    Status,
+    /// List all discovered Pioneer DJ devices (CDJs, DJM mixer) on the Link network
+    Devices,
+    /// Show active deck playback states and current tracks
+    Decks,
 }
 
 #[derive(Subcommand, Debug)]
@@ -71,6 +82,61 @@ enum Commands {
     },
     /// Continuously stream live audio VU meters and gain in terminal
     Monitor,
+    /// Analyze, split, remaster, and generate reports for recorded post-event audio sessions
+    Process {
+        /// Session identifier (e.g. "Event_2026-10-30" or "2026-10-30") or directory
+        #[arg(short, long)]
+        session: Option<String>,
+
+        /// Path to timetable text or schedule file (e.g. timetable.txt)
+        #[arg(short, long)]
+        timetable: Option<std::path::PathBuf>,
+
+        /// Audio mastering preset ("streaming", "club", or "custom")
+        #[arg(short, long, default_value = "streaming")]
+        preset: String,
+
+        /// Output directory for split tracks and reports (defaults to <recordings_dir>/<session>_mastered)
+        #[arg(short, long)]
+        output_dir: Option<std::path::PathBuf>,
+
+        /// Base directory containing raw recordings and session logs
+        #[arg(long)]
+        recordings_dir: Option<std::path::PathBuf>,
+
+        /// Target integrated loudness in LUFS (e.g. -14.0 or -11.0, overrides preset)
+        #[arg(long)]
+        target_lufs: Option<f32>,
+
+        /// Target true peak ceiling in dBTP (e.g. -1.0 or -0.5, overrides preset)
+        #[arg(long)]
+        ceiling_dbtp: Option<f32>,
+
+        /// Enable declip audio restoration filter for clipped peaks
+        #[arg(long)]
+        declip: bool,
+
+        /// Export 320 kbps MP3 files alongside 24-bit/96kHz FLAC masters
+        #[arg(long)]
+        mp3: bool,
+
+        /// Render a gapless full-event audio master in addition to individual artist sets
+        #[arg(long)]
+        full_event: bool,
+
+        /// Force processing even if djm-daemon is active or disk margin is tight
+        #[arg(long)]
+        force: bool,
+
+        /// Analyze and plan boundaries/metrics without writing rendered audio
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Pioneer Pro DJ Link live network monitoring, player discovery, and deck status
+    Prodj {
+        #[command(subcommand)]
+        action: Option<ProdjAction>,
+    },
 }
 
 #[tokio::main]
@@ -212,6 +278,38 @@ async fn main() -> Result<()> {
         }
         Commands::Monitor => {
             stream_live_monitor().await?;
+        }
+        Commands::Process {
+            session,
+            timetable,
+            preset,
+            output_dir,
+            recordings_dir,
+            target_lufs,
+            ceiling_dbtp,
+            declip,
+            mp3,
+            full_event,
+            force,
+            dry_run,
+        } => {
+            process::run_studio_process(process::ProcessArgs {
+                session,
+                timetable,
+                preset,
+                output_dir,
+                recordings_dir,
+                target_lufs,
+                ceiling_dbtp,
+                declip,
+                mp3,
+                full_event,
+                force,
+                dry_run,
+            }).await?;
+        }
+        Commands::Prodj { action } => {
+            cmd_prodj(action).await?;
         }
     }
 
@@ -382,7 +480,7 @@ fn print_telemetry_snapshot(t: &Telemetry) {
 struct CursorGuard;
 impl Drop for CursorGuard {
     fn drop(&mut self) {
-        print!("\x1b[?25h\n");
+        println!("\x1b[?25h");
         let _ = std::io::stdout().flush();
     }
 }
@@ -509,5 +607,103 @@ async fn stream_live_monitor() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn cmd_prodj(action: Option<ProdjAction>) -> Result<()> {
+    use djm_common::prodj::{default_prodj_socket_path, ProDjTelemetry};
+
+    let socket_path = default_prodj_socket_path();
+    let stream = match UnixStream::connect(&socket_path).await {
+        Ok(s) => s,
+        Err(_) => {
+            println!("Could not connect to djm-prodj socket at {}.", socket_path.display());
+            println!("Please verify the Pro DJ Link daemon is running:");
+            println!("  djm-prodj");
+            println!("  systemctl --user start djm-box-prodj");
+            return Ok(());
+        }
+    };
+
+    let (reader, _) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+    let first_line = lines.next_line().await?.ok_or_else(|| anyhow::anyhow!("No telemetry received from djm-prodj"))?;
+    let telem: ProDjTelemetry = serde_json::from_str(&first_line)
+        .map_err(|e| anyhow::anyhow!("Invalid telemetry received from djm-prodj: {}", e))?;
+
+    match action.unwrap_or(ProdjAction::Status) {
+        ProdjAction::Status => {
+            println!("\x1b[1m=== Pioneer Pro DJ Link Status ===\x1b[0m");
+            println!("Devices on Network: {}", telem.network_device_count);
+            println!("Settling Phase:     {}", if telem.is_settling { "\x1b[33mActive (observing network)\x1b[0m" } else { "\x1b[32mSettled\x1b[0m" });
+            println!("Virtual Player:     {}", match telem.virtual_player_number {
+                Some(num) => format!("\x1b[32mClaimed Player #{}\x1b[0m", num),
+                None => "\x1b[90mPassive (unclaimed)\x1b[0m".to_string(),
+            });
+            println!("Metadata Mode:      {}", if telem.is_degraded {
+                "\x1b[33mDegraded (track titles unavailable)\x1b[0m"
+            } else {
+                "\x1b[32mFull (rekordbox PDB parsed)\x1b[0m"
+            });
+            println!("Active Decks:       {}", telem.decks.len());
+            let on_air_count = telem.decks.iter().filter(|d| d.is_on_air).count();
+            println!("On-Air Decks:       {}", on_air_count);
+            if !telem.active_clusters.is_empty() {
+                println!("Active B2B Sets:    {}", telem.active_clusters.len());
+                for c in &telem.active_clusters {
+                    println!("  - Cluster #{}: {} tracks, proposed artist: {}",
+                        c.cluster_id, c.track_count, c.proposed_artist.as_deref().unwrap_or("Unknown"));
+                }
+            }
+        }
+        ProdjAction::Devices => {
+            println!("\x1b[1m=== Discovered Pioneer DJ Devices ({}) ===\x1b[0m", telem.devices.len());
+            if telem.devices.is_empty() {
+                println!("No Pioneer DJ devices discovered yet on Link network.");
+            } else {
+                println!("{:<8} {:<16} {:<16} {:<18} {:<8}", "Player", "Model", "IP Address", "MAC Address", "Type");
+                println!("{:-<8} {:-<16} {:-<16} {:-<18} {:-<8}", "", "", "", "", "");
+                for d in &telem.devices {
+                    let mac_str = format!("{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                        d.mac_address[0], d.mac_address[1], d.mac_address[2],
+                        d.mac_address[3], d.mac_address[4], d.mac_address[5]);
+                    let dev_type = if d.is_mixer { "Mixer" } else { "Player" };
+                    println!("{:<8} {:<16} {:<16} {:<18} {:<8}",
+                        format!("#{}", d.player_number),
+                        d.model,
+                        d.ip_address,
+                        mac_str,
+                        dev_type,
+                    );
+                }
+            }
+        }
+        ProdjAction::Decks => {
+            println!("\x1b[1m=== Active Decks ({}) ===\x1b[0m", telem.decks.len());
+            if telem.decks.is_empty() {
+                println!("No active CDJ decks reporting status.");
+            } else {
+                println!("{:<6} {:<8} {:<10} {:<8} {:<24} {:<20} {:<14}", "Deck", "On-Air", "State", "BPM", "Track", "Artist", "USB Media");
+                println!("{:-<6} {:-<8} {:-<10} {:-<8} {:-<24} {:-<20} {:-<14}", "", "", "", "", "", "", "");
+                for d in &telem.decks {
+                    let on_air_str = if d.is_on_air { "\x1b[31;1mON-AIR\x1b[0m" } else { "OFF" };
+                    let state_str = if d.is_playing { "PLAY" } else { "CUE" };
+                    let bpm_str = d.bpm.map(|b| format!("{:.1}", b)).unwrap_or_else(|| "--".to_string());
+                    let title = d.track_title.as_deref().unwrap_or("Unavailable");
+                    let artist = d.track_artist.as_deref().unwrap_or("Unavailable");
+                    let media = d.usb_media_name.as_deref().or(d.usb_media_id.as_deref()).unwrap_or("--");
+                    println!("{:<6} {:<8} {:<10} {:<8} {:<24} {:<20} {:<14}",
+                        format!("#{}", d.player_number),
+                        on_air_str,
+                        state_str,
+                        bpm_str,
+                        title,
+                        artist,
+                        media,
+                    );
+                }
+            }
+        }
+    }
     Ok(())
 }

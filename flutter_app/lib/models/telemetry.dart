@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'prodj.dart';
 
 enum RecordingState {
   disconnected,
@@ -26,6 +27,7 @@ class Telemetry {
   final String? activeFilename;
   final double? pauseCountdownSecs;
   final List<String> recentLogs;
+  final ProDjTelemetry? prodj;
 
   const Telemetry({
     this.state = RecordingState.disconnected,
@@ -45,6 +47,7 @@ class Telemetry {
     this.activeFilename,
     this.pauseCountdownSecs,
     this.recentLogs = const [],
+    this.prodj,
   });
 
   bool get isMixerConnected =>
@@ -140,7 +143,8 @@ class Telemetry {
     byteData.setInt16(6, rmsLCentiDb, Endian.little);
     byteData.setInt16(8, rmsRCentiDb, Endian.little);
 
-    byteData.setUint16(10, clipCount, Endian.little);
+    byteData.setUint16(
+        10, clipCount > 65535 ? 65535 : (clipCount < 0 ? 0 : clipCount), Endian.little);
     byteData.setUint32(12, activeFileDurationSecs, Endian.little);
     byteData.setUint16(16, activeFileSizeMb, Endian.little);
     byteData.setUint16(18, freeDiskGbTenths, Endian.little);
@@ -179,7 +183,7 @@ class Telemetry {
       peakRCentiDb: json['peak_r_centi_db'] as int? ?? -9600,
       rmsLCentiDb: json['rms_l_centi_db'] as int? ?? -9600,
       rmsRCentiDb: json['rms_r_centi_db'] as int? ?? -9600,
-      clipCount: json['clip_count'] as int? ?? 0,
+      clipCount: (json['clip_count'] as num?)?.toInt() ?? 0,
       activeFileDurationSecs: json['active_file_duration_secs'] as int? ?? 0,
       activeFileSizeMb: json['active_file_size_mb'] as int? ?? 0,
       freeDiskGbTenths: json['free_disk_gb_tenths'] as int? ?? 0,
@@ -188,6 +192,9 @@ class Telemetry {
       activeFilename: json['active_filename'] as String?,
       pauseCountdownSecs: (json['pause_countdown_secs'] as num?)?.toDouble(),
       recentLogs: (json['recent_logs'] as List<dynamic>?)?.cast<String>() ?? const [],
+      prodj: json['prodj'] != null
+          ? ProDjTelemetry.fromJson(json['prodj'] as Map<String, dynamic>)
+          : null,
     );
   }
 }
