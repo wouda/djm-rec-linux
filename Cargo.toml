@@ -15,6 +15,8 @@ edition = "2021"
 authors = ["djm-rec-linux developers"]
 license = "MIT"
 publish = false
+homepage = "https://djm-rec-linux.wouda.eu/"
+repository = "https://github.com/wouda/djm-rec-linux"
 
 [workspace.dependencies]
 djm-common = { path = "crates/djm-common" }
